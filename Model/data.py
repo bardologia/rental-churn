@@ -4,7 +4,7 @@ import torch
 import logging
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from Configs.config import config
 from Utils.logger import Logger
 
@@ -82,27 +82,48 @@ class DataModule:
 
         df = df.dropna(subset=self.target_cols)
         
-        # Random split strategy
+        # Group-based split strategy - prevents data leakage
+        # Same user cannot appear in train AND test/val
         test_size = config.data.test_size
         val_size = config.data.val_size
         
-        # First split: separate test set
-        train_val_df, test_df = train_test_split(
-            df, 
-            test_size=test_size, 
-            random_state=config.data.random_state,
-            shuffle=True
-        )
+        # Ensure we have user_id column
+        user_col = 'usuarioId'
+        if user_col not in df.columns:
+            self.logger.warning(f"Column '{user_col}' not found. Falling back to random split.")
+            user_col = None
         
-        # Second split: separate validation from training
-        # Adjust val_size to be relative to train_val size
-        val_size_adjusted = val_size / (1 - test_size)
-        train_df, val_df = train_test_split(
-            train_val_df, 
-            test_size=val_size_adjusted, 
-            random_state=config.data.random_state,
-            shuffle=True
-        )
+        if user_col:
+            # First split: separate test set by user groups
+            gss_test = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=config.data.random_state)
+            train_val_idx, test_idx = next(gss_test.split(df, groups=df[user_col]))
+            train_val_df = df.iloc[train_val_idx].copy()
+            test_df = df.iloc[test_idx].copy()
+            
+            # Second split: separate validation from training by user groups
+            val_size_adjusted = val_size / (1 - test_size)
+            gss_val = GroupShuffleSplit(n_splits=1, test_size=val_size_adjusted, random_state=config.data.random_state)
+            train_idx, val_idx = next(gss_val.split(train_val_df, groups=train_val_df[user_col]))
+            train_df = train_val_df.iloc[train_idx].copy()
+            val_df = train_val_df.iloc[val_idx].copy()
+            
+            # Verify no user overlap
+            train_users = set(train_df[user_col].unique())
+            val_users = set(val_df[user_col].unique())
+            test_users = set(test_df[user_col].unique())
+            
+            assert len(train_users & val_users) == 0, "User leakage between train and val!"
+            assert len(train_users & test_users) == 0, "User leakage between train and test!"
+            assert len(val_users & test_users) == 0, "User leakage between val and test!"
+            
+            self.logger.info(f"Group Split by '{user_col}' - No user leakage verified")
+            self.logger.info(f"Unique users - Train: {len(train_users)}, Val: {len(val_users)}, Test: {len(test_users)}")
+        else:
+            # Fallback to random split (not recommended)
+            from sklearn.model_selection import train_test_split
+            train_val_df, test_df = train_test_split(df, test_size=test_size, random_state=config.data.random_state)
+            val_size_adjusted = val_size / (1 - test_size)
+            train_df, val_df = train_test_split(train_val_df, test_size=val_size_adjusted, random_state=config.data.random_state)
 
         # Fit Scaler ONLY on Training Data
         if self.cont_cols:
@@ -110,7 +131,7 @@ class DataModule:
             val_df[self.cont_cols] = self.scaler.transform(val_df[self.cont_cols])
             test_df[self.cont_cols] = self.scaler.transform(test_df[self.cont_cols])
         
-        self.logger.info(f"Random Split Strategy Implemented (seed={config.data.random_state})")
+        self.logger.info(f"Group-based Split Strategy Implemented (seed={config.data.random_state})")
 
 
         def get_arrays(dframe):

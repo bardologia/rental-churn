@@ -31,7 +31,8 @@ class Columns:
     cat_cols: List[str] = field(default_factory=lambda: [
         'recorrencia_pagamento', 'sexo', 'faixa_idade_resumida', 
         'veiculo_modelo', 'pacoteNome', 'formaPagamento', 
-        'lugar', 'regiao', 'produto_categoria'
+        'lugar', 'regiao', 'produto_categoria',
+        'month'  # Calendar categorical feature
     ])
     
     cont_cols: List[str] = field(default_factory=lambda: [
@@ -42,7 +43,9 @@ class Columns:
         'recent_delay_rate', 'recent_avg_delay_days',
         'trend_delay_rate',
         'risk_score',
-        'quantidadeDiarias', 'valor_caucao_brl'
+        'quantidadeDiarias', 'valor_caucao_brl',
+        # Calendar/seasonality features
+        'day_of_week', 'is_weekend', 'is_month_end', 'is_first_invoice'
     ])
     
     target_cols: List[str] = field(default_factory=lambda: [
@@ -64,12 +67,14 @@ class Columns:
         'hist_count_delays', 'hist_sum_val_delayed', 'hist_total_penalty',
         'hist_max_streak', 'hist_max_delay_days',
         'hist_delay_rate', 'hist_avg_val_delayed', 'hist_avg_penalty',
-        # Recency (NEW)
+        # Recency
         'recent_delay_rate', 'recent_avg_delay_days',
-        # Trend (NEW)
+        # Trend
         'trend_delay_rate',
-        # Risk (NEW)
+        # Risk
         'risk_score',
+        # Calendar/seasonality
+        'day_of_week', 'is_weekend', 'is_month_end', 'month', 'is_first_invoice',
         # Target
         'target_default_1'
     ])

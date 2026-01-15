@@ -44,6 +44,13 @@ def run_pipeline(input_path: str, output_path: str) -> pd.DataFrame:
     
     df['invoice_sequence'] = df.groupby('usuarioId').cumcount() + 1
     
+    # === CALENDAR/SEASONALITY FEATURES ===
+    df['day_of_week'] = df['vencimentoData'].dt.dayofweek  # 0=Monday, 6=Sunday
+    df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
+    df['is_month_end'] = (df['vencimentoData'].dt.day >= 25).astype(int)
+    df['month'] = df['vencimentoData'].dt.month
+    df['is_first_invoice'] = (df['invoice_sequence'] == 1).astype(int)
+    
     days = (now_utc - df['vencimentoData']).dt.days
     df['is_default'] = (df['pagamentoData'].isna() & (days > 90)).astype(int)
     df['days_since_due'] = days
