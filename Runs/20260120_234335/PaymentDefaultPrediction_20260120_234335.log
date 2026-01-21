@@ -1,0 +1,118 @@
+[2026-01-20 23:43:35] [Experiment] PaymentDefaultPrediction
+[2026-01-20 23:43:35] [Start] 2026-01-20 23:43:35
+[2026-01-20 23:43:35] [Log Dir] /root/rental-churn/Runs/20260120_234335
+[2026-01-20 23:43:35] [TensorBoard] Enabled
+[2026-01-20 23:43:35] 
+[2026-01-20 23:43:35] >>> EXPERIMENT INITIALIZATION
+[2026-01-20 23:43:35] [Experiment] Run ID: 20260120_234335
+[2026-01-20 23:43:35] [Experiment] Run directory: /root/rental-churn/Runs/20260120_234335
+[2026-01-20 23:43:35]   > Data Module Setup
+[2026-01-20 23:43:35] 
+[2026-01-20 23:43:35] >>> DATA PREPARATION PIPELINE
+[2026-01-20 23:43:35] [Data Loading] Loading sequential data from: /root/rental-churn/Data/training_data.parquet
+[2026-01-20 23:43:45] [Data Loading] Loaded 5,991,050 rows, 132 columns
+[2026-01-20 23:43:45] [Data Cleaning] Removing 109,204 users with missing payment dates (NaT)
+[2026-01-20 23:44:12]   > Feature Configuration
+[2026-01-20 23:44:12] [Features] Categorical: 17 features
+[2026-01-20 23:44:12] [Features] Continuous: 26 features
+[2026-01-20 23:44:12] [Features] Targets: 3 (target_short, target_medium, target_long)
+[2026-01-20 23:45:11] [Stratified Sampling] Users with target_long (>14d): 4,439
+[2026-01-20 23:45:11] [Stratified Sampling] Users with target_medium only (7-14d): 12,186
+[2026-01-20 23:45:11] [Stratified Sampling] Users with target_short only (3-7d): 36,821
+[2026-01-20 23:45:11] [Stratified Sampling] Users with no defaults (<=3d): 99,679
+[2026-01-20 23:45:11] [Subsampling] Stratified sampling: 16,625/153,125 users (10.9%)
+[2026-01-20 23:45:11] [Subsampling] Target quota was 12,250, selected 16,625 (prioritizing minority classes)
+[2026-01-20 23:45:11]   > Dataset Splitting
+[2026-01-20 23:45:11] [Split] Train: 13,299 users (80.0%)
+[2026-01-20 23:45:11] [Split] Validation: 1,663 users (10.0%)
+[2026-01-20 23:45:11] [Split] Test: 1,663 users (10.0%)
+[2026-01-20 23:45:12]   > Expanding Window Sequences
+[2026-01-20 23:45:12] [Sequences] Train: 217,703 samples
+[2026-01-20 23:45:12] [Sequences] Validation: 26,738 samples
+[2026-01-20 23:45:12] [Sequences] Test: 26,644 samples
+[2026-01-20 23:45:12] [Sequences] Total: 271,085 samples (max_len=50, min_len=2)
+[2026-01-20 23:45:12]   > Target Imbalance Analysis
+[2026-01-20 23:45:12]   > Class Distribution per Target
+[2026-01-20 23:45:12]     Target        | Positive | Ratio  | Negative | Recommended Weight
+[2026-01-20 23:45:12]     target_short  | 84,260   | 38.70% | 133,443  | 1.5837            
+[2026-01-20 23:45:12]     target_medium | 18,928   | 8.69%  | 198,775  | 10.5016           
+[2026-01-20 23:45:12]     target_long   | 2,804    | 1.29%  | 214,899  | 76.6402           
+[2026-01-20 23:45:12] [Weights] Final pos_weight tensor: ['1.5837', '10.5016', '76.6402']
+[2026-01-20 23:45:12]   > Data Augmentation Configuration
+[2026-01-20 23:45:12] [Augmentation] Status: ENABLED
+[2026-01-20 23:45:12] [Augmentation] Probability: 10.0%
+[2026-01-20 23:45:12] [Augmentation] Methods: Temporal Cutout, Feature Dropout, Gaussian Noise
+[2026-01-20 23:45:12]   > Model Architecture
+[2026-01-20 23:45:12]   > Model Architecture
+[2026-01-20 23:45:12]     Model: SOTAModel (Hierarchical Transformer)
+[2026-01-20 23:45:12]     Trainable Parameters: 1,777,734
+[2026-01-20 23:45:12]     Model Size (MB): 6.78
+[2026-01-20 23:45:12]     Embedding Dimensions : 17
+[2026-01-20 23:45:12]     Continuous Features  : 26
+[2026-01-20 23:45:12]     Hidden Dimension     : 128
+[2026-01-20 23:45:12]     Invoice Layers       : 1
+[2026-01-20 23:45:12]     Sequence Layers      : 3
+[2026-01-20 23:45:12]     Attention Heads      : 4
+[2026-01-20 23:45:12]     Dropout              : 0.1
+[2026-01-20 23:45:12]     DropPath Rate        : 0.1
+[2026-01-20 23:45:12]     Max Sequence Length  : 50
+[2026-01-20 23:45:12]     Temporal Attention   : Enabled
+[2026-01-20 23:45:12]     Temperature Scaling  : Enabled
+[2026-01-20 23:45:12]   > Trainer Configuration
+[2026-01-20 23:45:12] [Device] Using: cuda
+[2026-01-20 23:45:12] [GPU] Name: NVIDIA RTX A5000
+[2026-01-20 23:45:12] [GPU] Memory Total: 23.56 GB
+[2026-01-20 23:45:12] [GPU] CUDA Version: 12.4
+[2026-01-20 23:45:12] [Loss] Asymmetric Loss (ASL) with γ_neg=4, γ_pos=1
+[2026-01-20 23:45:13] [EMA] Exponential Moving Average enabled (decay=0.9999, warmup=2000 steps)
+[2026-01-20 23:45:13] 
+[2026-01-20 23:45:13] >>> MODEL TRAINING
+[2026-01-20 23:45:13]   > Training Configuration
+[2026-01-20 23:45:13]   > Configuration
+[2026-01-20 23:45:13]     Device               : cuda
+[2026-01-20 23:45:13]     Trainable Parameters : 1,777,734
+[2026-01-20 23:45:13]     Epochs               : 50
+[2026-01-20 23:45:13]     Learning Rate        : 1.00e-03
+[2026-01-20 23:45:13]     Batch Size           : 256
+[2026-01-20 23:45:13]     Weight Decay         : 1.00e-04
+[2026-01-20 23:45:13]     Mixed Precision      : Disabled
+[2026-01-20 23:45:13]     EMA                  : Enabled (decay=0.9999)
+[2026-01-20 23:45:13]     Gradient Clipping    : max_norm=1.0
+[2026-01-20 23:45:13]   > Dataset Statistics
+[2026-01-20 23:45:13]   > Configuration
+[2026-01-20 23:45:13]     Train Samples      : 217,703
+[2026-01-20 23:45:13]     Validation Samples : 26,738
+[2026-01-20 23:45:13]     Test Samples       : 26,644
+[2026-01-20 23:45:13] [Scheduler] CosineAnnealingWarmRestarts (T_0=10, T_mult=2, η_min=1.00e-06)
+[2026-01-20 23:45:13]   > Training Progress
+[2026-01-20 23:47:31] Epoch [001/050]  Loss: 0.0529/0.0484 | AUC-ROC: 0.8162 | AUC-PR: 0.4105 | F1-Score: 0.4358 | LR: 9.76e-04 
+[2026-01-20 23:47:31]     target_short: AUC=0.8195 | PR=0.6999 | F1=0.6774 | τ=0.589
+[2026-01-20 23:47:31]     target_medium: AUC=0.8341 | PR=0.3463 | F1=0.4044 | τ=0.534
+[2026-01-20 23:47:31]     target_long: AUC=0.7949 | PR=0.1853 | F1=0.2255 | τ=0.497
+[2026-01-20 23:47:31] [Checkpoint] New best model saved → AUC: 0.4105
+[2026-01-20 23:47:31]     ★ New Best Model: AUC-PR=0.4105, AUC-ROC=0.8162
+[2026-01-20 23:49:49] Epoch [002/050]  Loss: 0.0493/0.0477 | AUC-ROC: 0.8264 | AUC-PR: 0.4295 | F1-Score: 0.4463 | LR: 9.05e-04 
+[2026-01-20 23:49:49]     target_short: AUC=0.8238 | PR=0.7067 | F1=0.6785 | τ=0.585
+[2026-01-20 23:49:49]     target_medium: AUC=0.8431 | PR=0.3729 | F1=0.4145 | τ=0.543
+[2026-01-20 23:49:49]     target_long: AUC=0.8124 | PR=0.2089 | F1=0.2458 | τ=0.433
+[2026-01-20 23:49:49] [Checkpoint] New best model saved → AUC: 0.4295
+[2026-01-20 23:49:49]     ★ New Best Model: AUC-PR=0.4295, AUC-ROC=0.8264
+[2026-01-20 23:52:07] Epoch [003/050]  Loss: 0.0487/0.0476 | AUC-ROC: 0.8274 | AUC-PR: 0.4298 | F1-Score: 0.4451 | LR: 7.94e-04 
+[2026-01-20 23:52:07]     target_short: AUC=0.8248 | PR=0.7068 | F1=0.6811 | τ=0.597
+[2026-01-20 23:52:07]     target_medium: AUC=0.8447 | PR=0.3785 | F1=0.4162 | τ=0.548
+[2026-01-20 23:52:07]     target_long: AUC=0.8127 | PR=0.2040 | F1=0.2381 | τ=0.454
+[2026-01-20 23:52:07] [Checkpoint] New best model saved → AUC: 0.4298
+[2026-01-20 23:52:07]     ★ New Best Model: AUC-PR=0.4298, AUC-ROC=0.8274
+[2026-01-20 23:54:25] Epoch [004/050]  Loss: 0.0481/0.0476 | AUC-ROC: 0.8282 | AUC-PR: 0.4309 | F1-Score: 0.4461 | LR: 6.55e-04 
+[2026-01-20 23:54:25]     target_short: AUC=0.8251 | PR=0.7071 | F1=0.6817 | τ=0.599
+[2026-01-20 23:54:25]     target_medium: AUC=0.8454 | PR=0.3798 | F1=0.4175 | τ=0.550
+[2026-01-20 23:54:25]     target_long: AUC=0.8140 | PR=0.2058 | F1=0.2392 | τ=0.459
+[2026-01-20 23:54:25] [Checkpoint] New best model saved → AUC: 0.4309
+[2026-01-20 23:54:25]     ★ New Best Model: AUC-PR=0.4309, AUC-ROC=0.8282
+[2026-01-20 23:56:43] Epoch [005/050]  Loss: 0.0478/0.0475 | AUC-ROC: 0.8290 | AUC-PR: 0.4316 | F1-Score: 0.4486 | LR: 5.01e-04 
+[2026-01-20 23:56:43]     target_short: AUC=0.8256 | PR=0.7075 | F1=0.6820 | τ=0.598
+[2026-01-20 23:56:43]     target_medium: AUC=0.8461 | PR=0.3811 | F1=0.4190 | τ=0.547
+[2026-01-20 23:56:43]     target_long: AUC=0.8154 | PR=0.2062 | F1=0.2449 | τ=0.446
+[2026-01-20 23:56:43] [Checkpoint] New best model saved → AUC: 0.4316
+[2026-01-20 23:56:43]     ★ New Best Model: AUC-PR=0.4316, AUC-ROC=0.8290
+[2026-01-20 23:58:12] [End] Duration: 00:14:36

@@ -143,12 +143,12 @@ class ModelParams:
     weight_decay: float = 1e-4
     outcome_dim: int = 1
     patience: int = 10
-    mixed_precision: bool = False
+    mixed_precision: bool = True
     max_grad_norm: float = 1.0
-    num_workers: int = 0
+    num_workers: int = 8
     pin_memory: bool = num_workers > 0
     persistent_workers: bool = num_workers > 0
-    prefetch_factor: int = num_workers * 2 if num_workers > 0 else 0
+    prefetch_factor: int = 0
     
     num_invoice_layers: int = 1
     

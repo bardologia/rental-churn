@@ -1,0 +1,84 @@
+[2026-01-20 23:38:37] [Experiment] PaymentDefaultPrediction
+[2026-01-20 23:38:37] [Start] 2026-01-20 23:38:37
+[2026-01-20 23:38:37] [Log Dir] /root/rental-churn/Runs/20260120_233837
+[2026-01-20 23:38:37] [TensorBoard] Enabled
+[2026-01-20 23:38:37] 
+[2026-01-20 23:38:37] >>> EXPERIMENT INITIALIZATION
+[2026-01-20 23:38:37] [Experiment] Run ID: 20260120_233837
+[2026-01-20 23:38:37] [Experiment] Run directory: /root/rental-churn/Runs/20260120_233837
+[2026-01-20 23:38:37]   > Data Module Setup
+[2026-01-20 23:38:37] 
+[2026-01-20 23:38:37] >>> DATA PREPARATION PIPELINE
+[2026-01-20 23:38:37] [Data Loading] Loading sequential data from: /root/rental-churn/Data/training_data.parquet
+[2026-01-20 23:38:59] [Data Loading] Loaded 5,991,050 rows, 132 columns
+[2026-01-20 23:38:59] [Data Cleaning] Removing 109,204 users with missing payment dates (NaT)
+[2026-01-20 23:39:27]   > Feature Configuration
+[2026-01-20 23:39:27] [Features] Categorical: 17 features
+[2026-01-20 23:39:27] [Features] Continuous: 26 features
+[2026-01-20 23:39:27] [Features] Targets: 3 (target_short, target_medium, target_long)
+[2026-01-20 23:40:55] [Stratified Sampling] Users with target_long (>14d): 4,439
+[2026-01-20 23:40:55] [Stratified Sampling] Users with target_medium only (7-14d): 12,186
+[2026-01-20 23:40:55] [Stratified Sampling] Users with target_short only (3-7d): 36,821
+[2026-01-20 23:40:55] [Stratified Sampling] Users with no defaults (<=3d): 99,679
+[2026-01-20 23:40:55] [Subsampling] Stratified sampling: 16,625/153,125 users (10.9%)
+[2026-01-20 23:40:55] [Subsampling] Target quota was 12,250, selected 16,625 (prioritizing minority classes)
+[2026-01-20 23:40:55]   > Dataset Splitting
+[2026-01-20 23:40:55] [Split] Train: 13,299 users (80.0%)
+[2026-01-20 23:40:55] [Split] Validation: 1,663 users (10.0%)
+[2026-01-20 23:40:55] [Split] Test: 1,663 users (10.0%)
+[2026-01-20 23:40:56]   > Expanding Window Sequences
+[2026-01-20 23:40:56] [Sequences] Train: 217,703 samples
+[2026-01-20 23:40:56] [Sequences] Validation: 26,738 samples
+[2026-01-20 23:40:56] [Sequences] Test: 26,644 samples
+[2026-01-20 23:40:56] [Sequences] Total: 271,085 samples (max_len=50, min_len=2)
+[2026-01-20 23:40:56]   > Target Imbalance Analysis
+[2026-01-20 23:40:56]   > Class Distribution per Target
+[2026-01-20 23:40:56]     Target        | Positive | Ratio  | Negative | Recommended Weight
+[2026-01-20 23:40:56]     target_short  | 84,260   | 38.70% | 133,443  | 1.5837            
+[2026-01-20 23:40:56]     target_medium | 18,928   | 8.69%  | 198,775  | 10.5016           
+[2026-01-20 23:40:56]     target_long   | 2,804    | 1.29%  | 214,899  | 76.6402           
+[2026-01-20 23:40:56] [Weights] Final pos_weight tensor: ['1.5837', '10.5016', '76.6402']
+[2026-01-20 23:40:56]   > Data Augmentation Configuration
+[2026-01-20 23:40:56] [Augmentation] Status: ENABLED
+[2026-01-20 23:40:56] [Augmentation] Probability: 10.0%
+[2026-01-20 23:40:56] [Augmentation] Methods: Temporal Cutout, Feature Dropout, Gaussian Noise
+[2026-01-20 23:40:56]   > Model Architecture
+[2026-01-20 23:40:56]   > Model Architecture
+[2026-01-20 23:40:56]     Model: SOTAModel (Hierarchical Transformer)
+[2026-01-20 23:40:56]     Trainable Parameters: 1,777,734
+[2026-01-20 23:40:56]     Model Size (MB): 6.78
+[2026-01-20 23:40:56]     Embedding Dimensions : 17
+[2026-01-20 23:40:56]     Continuous Features  : 26
+[2026-01-20 23:40:56]     Hidden Dimension     : 128
+[2026-01-20 23:40:56]     Invoice Layers       : 1
+[2026-01-20 23:40:56]     Sequence Layers      : 3
+[2026-01-20 23:40:56]     Attention Heads      : 4
+[2026-01-20 23:40:56]     Dropout              : 0.1
+[2026-01-20 23:40:56]     DropPath Rate        : 0.1
+[2026-01-20 23:40:56]     Max Sequence Length  : 50
+[2026-01-20 23:40:56]     Temporal Attention   : Enabled
+[2026-01-20 23:40:56]     Temperature Scaling  : Enabled
+[2026-01-20 23:40:56]   > Trainer Configuration
+[2026-01-20 23:40:57] [Loss] Asymmetric Loss (ASL) with γ_neg=4, γ_pos=1
+[2026-01-20 23:40:57] [EMA] Exponential Moving Average enabled (decay=0.9999, warmup=2000 steps)
+[2026-01-20 23:40:57] 
+[2026-01-20 23:40:57] >>> MODEL TRAINING
+[2026-01-20 23:40:57]   > Training Configuration
+[2026-01-20 23:40:57]   > Configuration
+[2026-01-20 23:40:57]     Device               : cuda
+[2026-01-20 23:40:57]     Trainable Parameters : 1,777,734
+[2026-01-20 23:40:57]     Epochs               : 50
+[2026-01-20 23:40:57]     Learning Rate        : 1.00e-03
+[2026-01-20 23:40:57]     Batch Size           : 256
+[2026-01-20 23:40:57]     Weight Decay         : 1.00e-04
+[2026-01-20 23:40:57]     Mixed Precision      : Disabled
+[2026-01-20 23:40:57]     EMA                  : Enabled (decay=0.9999)
+[2026-01-20 23:40:57]     Gradient Clipping    : max_norm=1.0
+[2026-01-20 23:40:57]   > Dataset Statistics
+[2026-01-20 23:40:57]   > Configuration
+[2026-01-20 23:40:57]     Train Samples      : 217,703
+[2026-01-20 23:40:57]     Validation Samples : 26,738
+[2026-01-20 23:40:57]     Test Samples       : 26,644
+[2026-01-20 23:40:57] [Scheduler] CosineAnnealingWarmRestarts (T_0=10, T_mult=2, η_min=1.00e-06)
+[2026-01-20 23:40:57]   > Training Progress
+[2026-01-20 23:42:34] [End] Duration: 00:03:56

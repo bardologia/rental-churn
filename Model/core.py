@@ -250,17 +250,17 @@ class DataPipeline:
         self.logger.info(f"[Output] Saved to {output_path}")
 
     def run(self, input_path: str, output_path: str) -> pd.DataFrame:
-        self.logger.section("Feature Engineering Pipeline")
+        self.logger.info(">>> FEATURE ENGINEERING PIPELINE")
         
         dataframe = self._load_data(input_path)
         
-        self.logger.subsection("Data Preprocessing")
+        self.logger.info("  > Data Preprocessing")
         dataframe = self.preprocessor.run(dataframe)
         
-        self.logger.subsection("Feature Extraction & Target Engineering")
+        self.logger.info("  > Feature Extraction & Target Engineering")
         dataframe = self.feature_engineer.run(dataframe)
         
-        self.logger.subsection("Finalization")
+        self.logger.info("  > Finalization")
         dataframe = self._finalize_data(dataframe)
         self._save_data(dataframe, output_path)
         

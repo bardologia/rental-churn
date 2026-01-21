@@ -13,15 +13,6 @@ __pycache__/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Logs and runs
-logs/
-runs/
-
-# Model checkpoints
-*.pth
-*.pt
-*.ckpt
-
 # IDE
 .vscode/
 .idea/

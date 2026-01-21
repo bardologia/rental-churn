@@ -1,0 +1,38 @@
+[2026-01-21 00:53:25] [Experiment] ResultsAnalysis
+[2026-01-21 00:53:25] [Start] 2026-01-21 00:53:25
+[2026-01-21 00:53:25] [Log Dir] /root/rental-churn/logs
+[2026-01-21 00:53:25] 
+[2026-01-21 00:53:25] >>> DATA PREPARATION PIPELINE
+[2026-01-21 00:53:25] [Data Loading] Loading sequential data from: /root/rental-churn/Data/training_data.parquet
+[2026-01-21 00:53:36] [Data Loading] Loaded 5,991,050 rows, 132 columns
+[2026-01-21 00:53:36] [Data Cleaning] Removing 109,204 users with missing payment dates (NaT)
+[2026-01-21 00:53:51]   > Feature Configuration
+[2026-01-21 00:53:51] [Features] Categorical: 17 features
+[2026-01-21 00:53:51] [Features] Continuous: 26 features
+[2026-01-21 00:53:51] [Features] Targets: 3 (target_short, target_medium, target_long)
+[2026-01-21 00:54:42] [Stratified Sampling] Users with target_long (>14d): 4,439
+[2026-01-21 00:54:42] [Stratified Sampling] Users with target_medium only (7-14d): 12,186
+[2026-01-21 00:54:42] [Stratified Sampling] Users with target_short only (3-7d): 36,821
+[2026-01-21 00:54:42] [Stratified Sampling] Users with no defaults (<=3d): 99,679
+[2026-01-21 00:54:42] [Subsampling] Stratified sampling: 16,625/153,125 users (10.9%)
+[2026-01-21 00:54:42] [Subsampling] Target quota was 12,250, selected 16,625 (prioritizing minority classes)
+[2026-01-21 00:54:43]   > Dataset Splitting
+[2026-01-21 00:54:43] [Split] Train: 13,299 users (80.0%)
+[2026-01-21 00:54:43] [Split] Validation: 1,663 users (10.0%)
+[2026-01-21 00:54:43] [Split] Test: 1,663 users (10.0%)
+[2026-01-21 00:54:43]   > Expanding Window Sequences
+[2026-01-21 00:54:43] [Sequences] Train: 217,703 samples
+[2026-01-21 00:54:43] [Sequences] Validation: 26,738 samples
+[2026-01-21 00:54:43] [Sequences] Test: 26,644 samples
+[2026-01-21 00:54:43] [Sequences] Total: 271,085 samples (max_len=50, min_len=2)
+[2026-01-21 00:54:43]   > Target Imbalance Analysis
+[2026-01-21 00:54:43]   > Class Distribution per Target
+[2026-01-21 00:54:43]     Target        | Positive | Ratio  | Negative | Recommended Weight
+[2026-01-21 00:54:43]     target_short  | 84,260   | 38.70% | 133,443  | 1.5837            
+[2026-01-21 00:54:43]     target_medium | 18,928   | 8.69%  | 198,775  | 10.5016           
+[2026-01-21 00:54:43]     target_long   | 2,804    | 1.29%  | 214,899  | 76.6402           
+[2026-01-21 00:54:43] [Weights] Final pos_weight tensor: ['1.5837', '10.5016', '76.6402']
+[2026-01-21 00:54:43]   > Data Augmentation Configuration
+[2026-01-21 00:54:43] [Augmentation] Status: ENABLED
+[2026-01-21 00:54:43] [Augmentation] Probability: 10.0%
+[2026-01-21 00:54:43] [Augmentation] Methods: Temporal Cutout, Feature Dropout, Gaussian Noise

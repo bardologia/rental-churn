@@ -120,6 +120,14 @@ class Trainer:
     ):
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
+        # Log GPU information
+        if logger:
+            logger.info(f"[Device] Using: {self.device}")
+            if self.device.type == 'cuda':
+                logger.info(f"[GPU] Name: {torch.cuda.get_device_name(0)}")
+                logger.info(f"[GPU] Memory Total: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+                logger.info(f"[GPU] CUDA Version: {torch.version.cuda}")
+        
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True 
             torch.backends.cuda.matmul.allow_tf32 = True  
