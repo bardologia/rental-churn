@@ -23,8 +23,9 @@ class InferenceEngine:
         self.feature_scalers = feature_scalers or {}
         self.config = config
         self.logger = logger or Logger(log_dir=None, name="inference", level="INFO")
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device 
         self.categorical_maps = categorical_maps
+        self.logger.info(f"[Inference] Using device: {self.device}")
 
         self.model.to(self.device)
         self.model.eval()

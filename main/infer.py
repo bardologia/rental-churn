@@ -29,12 +29,13 @@ from core.inference import InferenceEngine
 from core.logger import Logger
 
 
-def infer(run_id: str = None, save_predictions: bool = True, batch_size: int = 256):
+def infer(model_path: str = None, save_predictions: bool = True, batch_size: int = 256):
     project_root = Path(os.path.abspath(os.path.join(current_dir, "..")))
+    workspace_root = project_root.parent
 
-    input_path    = project_root / "data" / "inference.parquet"
-    run_dir       = project_root / "runs" / run_id
-    metadata_path = run_dir / "model_metadata.pt"
+    input_path    = project_root / "data" / "inference_data.parquet"
+    model_dir     = Path(model_path) if model_path else workspace_root / "churn-model" / "small_model"
+    metadata_path = model_dir / "model_metadata.pt"
     
     logger = Logger(name="infer", level="INFO", log_dir=None)
     logger.info(f"Loading data from {input_path}")
@@ -43,8 +44,8 @@ def infer(run_id: str = None, save_predictions: bool = True, batch_size: int = 2
     df = table.to_pandas(ignore_metadata=True, strings_to_categorical=False)
     
     logger.info(f"[Data loaded] : {df.shape}")
-    logger.info(f"[Using model] : {run_dir.name}")
-    state_dict_path = run_dir / "model_state_dict.pt"
+    logger.info(f"[Using model] : {model_dir}")
+    state_dict_path = model_dir / "model_state_dict.pt"
     
     metadata = torch.load(metadata_path, map_location="cpu", weights_only=False)
     logger.info("[Metadata loaded]")
@@ -67,6 +68,7 @@ def infer(run_id: str = None, save_predictions: bool = True, batch_size: int = 2
         config           = metadata["config"],
         categorical_maps = metadata['categorical_maps'],
         logger=logger,
+        device= "cuda"
     )
     
     num_users = df[config.columns.user_id_col].nunique()
@@ -75,7 +77,7 @@ def infer(run_id: str = None, save_predictions: bool = True, batch_size: int = 2
     logger.info(f"[Inference] Inference complete: {len(predictions)} predictions")
     
     if save_predictions:
-        output_file = run_dir / "inference_results.csv"
+        output_file = model_dir / "inference_results.csv"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         predictions.to_csv(output_file, index=False)
         logger.info(f"[Inference] Results saved to: {output_file}")
@@ -85,13 +87,13 @@ def infer(run_id: str = None, save_predictions: bool = True, batch_size: int = 2
 
 def main():
     parser = argparse.ArgumentParser(description="Run inference with trained rental churn prediction model")
-    parser.add_argument("--run_id",      type=str, required=True, help="Run ID for the model to use",)
+    parser.add_argument("--model-path", type=str, default=None, help="Path to the model directory (default: churn-model/small_model)",)
     parser.add_argument("--save", action="store_true", help="Whether to save predictions to a CSV file",)
     parser.add_argument("--batch-size", type=int, default=256,   help="Batch size for processing (default: 256)",)
     args = parser.parse_args()
 
     predictions, output_path = infer(
-        run_id=args.run_id,
+        model_path=args.model_path,
         save_predictions=args.save,
         batch_size=args.batch_size,
     )

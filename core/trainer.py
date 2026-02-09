@@ -12,6 +12,121 @@ import copy
 from tqdm.auto import tqdm
 
 
+class Loss(nn.Module):
+    def __init__(
+        self,
+        huber_delta: float = 1.0,
+        quantiles: list = [0.1, 0.5, 0.9],
+        quantile_weight: float = 0.3,
+        threshold_weight: float = 0.2,
+        thresholds: list = [15.0, 30.0],
+    ):
+        super().__init__()
+        self.huber_delta = huber_delta
+        self.quantiles = torch.tensor(quantiles)
+        self.quantile_weight = quantile_weight
+        self.threshold_weight = threshold_weight
+        self.thresholds = thresholds
+        
+    def huber_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        diff = preds - targets
+        abs_diff = torch.abs(diff)
+        quadratic = torch.clamp(abs_diff, max=self.huber_delta)
+        linear = abs_diff - quadratic
+        loss = 0.5 * quadratic.pow(2) + self.huber_delta * linear
+        return loss
+    
+    def quantile_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        quantiles = self.quantiles.to(preds.device)
+        errors = targets.unsqueeze(-1) - preds.unsqueeze(-1)
+        loss = torch.max(quantiles * errors, (quantiles - 1) * errors)
+        return loss.mean(dim=-1)
+    
+    def threshold_focused_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        loss = torch.zeros_like(preds)
+        for threshold in self.thresholds:
+            pred_above = (preds > threshold).float()
+            target_above = (targets > threshold).float()
+            threshold_proximity = torch.exp(-torch.abs(targets - threshold) / 5.0)
+            misclassification = torch.abs(pred_above - target_above)
+            loss += misclassification * threshold_proximity * torch.abs(preds - targets)
+        
+        return loss
+    
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        huber = self.huber_loss(preds, targets)
+        quantile = self.quantile_loss(preds, targets)
+        threshold = self.threshold_focused_loss(preds, targets)
+        
+        total_loss = (
+            huber + 
+            self.quantile_weight * quantile + 
+            self.threshold_weight * threshold
+        )
+        
+        return total_loss
+
+
+class Warmup:
+    def __init__(self, optimizer, warmup_steps: int, warmup_start_factor: float = 0.1, enabled: bool = True):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.warmup_start_factor = warmup_start_factor
+        self.enabled = enabled
+        self.base_lrs = [group['lr'] for group in optimizer.param_groups]
+        self.current_step = 0
+        self.warmup_finished = False
+        
+        if self.enabled and self.warmup_steps > 0:
+            self._apply_warmup_factor(self.warmup_start_factor)
+    
+    def _apply_warmup_factor(self, factor: float) -> None:
+        for i, group in enumerate(self.optimizer.param_groups):
+            group['lr'] = self.base_lrs[i] * factor
+    
+    def step(self) -> None:
+        if not self.enabled or self.warmup_steps <= 0:
+            return
+        
+        self.current_step += 1
+        
+        if self.current_step <= self.warmup_steps:
+            progress = self.current_step / self.warmup_steps
+            factor = self.warmup_start_factor + (1.0 - self.warmup_start_factor) * progress
+            self._apply_warmup_factor(factor)
+        elif not self.warmup_finished:
+            self._apply_warmup_factor(1.0)
+            self.warmup_finished = True
+    
+    def is_finished(self) -> bool:
+        return self.warmup_finished or not self.enabled or self.warmup_steps <= 0
+
+
+class Scheduler:
+    def __init__(self, optimizer, scheduler_type: str = 'cosine', warmup: Warmup = None, **scheduler_kwargs):
+        self.optimizer = optimizer
+        self.warmup = warmup
+        self.scheduler_type = scheduler_type
+        
+        if scheduler_type == 'cosine':
+            self.scheduler = CosineAnnealingLR(optimizer, **scheduler_kwargs)
+        else:
+            raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+    
+    def step(self, epoch: bool = True) -> None:
+        if self.warmup and not self.warmup.is_finished():
+            return
+        
+        if epoch:
+            self.scheduler.step()
+    
+    def state_dict(self) -> dict:
+        return self.scheduler.state_dict()
+    
+    def load_state_dict(self, state_dict: dict) -> None:
+        self.scheduler.load_state_dict(state_dict)
+
+
 class EMA:
     def __init__(self, model: nn.Module, decay: float = 0.9999):
         self.decay = decay
@@ -76,30 +191,43 @@ class Trainer:
         self.high_target_weight = self.config.training.high_target_weight
         self.logger.info(f"[High Target Weight] Weight: {self.high_target_weight}\n")
   
-        self.criterion = nn.SmoothL1Loss(reduction='none')
+        self.criterion = Loss(
+            huber_delta=self.config.loss.huber_delta,
+            quantiles=self.config.loss.quantiles,
+            quantile_weight=self.config.loss.quantile_weight,
+            threshold_weight=self.config.loss.threshold_weight,
+            thresholds=self.config.loss.thresholds,
+        )
+        
+        self.logger.info(f"[Loss Function] Loss - Huber(δ={self.config.loss.huber_delta}), "
+                        f"Quantile(w={self.config.loss.quantile_weight}), "
+                        f"Threshold(w={self.config.loss.threshold_weight}, t={self.config.loss.thresholds})\n")
+        
         self.scaler    = GradScaler() if self.config.training.mixed_precision else None
 
         self.layerwise_optimizer()
 
-        self.base_lrs = [group['lr'] for group in self.optimizer.param_groups]
-        self.warmup_enabled = self.config.training.warmup_enabled
-        self.warmup_steps = self.config.training.warmup_steps
-        self.warmup_start_factor = self.config.training.warmup_start_factor
-        self.warmup_finished = False
         self.grad_accum_steps = max(1, self.config.training.grad_accum_steps)
         self.logger.info(f"[Grad Accumulation] Effective batch size: {self.train_loader.batch_size * self.grad_accum_steps}\n")
 
-        if self.warmup_enabled and self.warmup_steps > 0:
-            self.apply_warmup_factor(self.warmup_start_factor)
-            self.logger.info(f"[Warmup] Enabled: {self.warmup_enabled}, Steps: {self.warmup_steps}, Start Factor: {self.warmup_start_factor}")
-            
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.config.training.epochs if self.config.scheduler.t_max is None else self.config.scheduler.t_max,
-            eta_min=self.config.scheduler.eta_min,
+        self.warmup = Warmup(
+            optimizer=self.optimizer,
+            warmup_steps=self.config.training.warmup_steps,
+            warmup_start_factor=self.config.training.warmup_start_factor,
+            enabled=self.config.training.warmup_enabled
+        )
+        self.logger.info(f"[Warmup] Enabled: {self.config.training.warmup_enabled}, Steps: {self.config.training.warmup_steps}, Start Factor: {self.config.training.warmup_start_factor}")
+        
+        t_max = self.config.training.epochs if self.config.scheduler.t_max is None else self.config.scheduler.t_max
+        self.scheduler_manager = Scheduler(
+            optimizer=self.optimizer,
+            scheduler_type='cosine',
+            warmup=self.warmup,
+            T_max=t_max,
+            eta_min=self.config.scheduler.eta_min
         )
         
-        self.logger.info(f"[Scheduler] CosineAnnealingLR with T_max={self.config.training.epochs if self.config.scheduler.t_max is None else self.config.scheduler.t_max}, eta_min={self.config.scheduler.eta_min}\n")
+        self.logger.info(f"[Scheduler] CosineAnnealingLR with T_max={t_max}, eta_min={self.config.scheduler.eta_min}\n")
 
         self.ema_enabled = self.config.ema.use_ema
         self.ema = EMA(self.model, decay=self.config.ema.ema_decay) if self.ema_enabled else None
@@ -154,7 +282,7 @@ class Trainer:
         for module_name, lr in lr_map.items():
             self.logger.info(f" [{module_name}] : {lr}'")
 
-    def weighted_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         losses = self.criterion(preds, targets).view(-1)
 
         if self.high_target_weight and self.target_scaler is not None and self.high_target_weight > 0:
@@ -167,23 +295,6 @@ class Trainer:
 
         return losses.mean()
 
-    def apply_warmup_factor(self, factor: float) -> None:
-        for i, group in enumerate(self.optimizer.param_groups):
-            group['lr'] = self.base_lrs[i] * factor
-
-    def apply_warmup(self) -> None:
-        if not self.warmup_enabled or self.warmup_steps <= 0:
-            return
-
-        step_num = self.global_step + 1
-        if step_num <= self.warmup_steps:
-            progress = step_num / self.warmup_steps
-            factor = self.warmup_start_factor + (1.0 - self.warmup_start_factor) * progress
-            self.apply_warmup_factor(factor)
-        elif not self.warmup_finished:
-            self.apply_warmup_factor(1.0)
-            self.warmup_finished = True
-
     def update_ema(self) -> None:
         if not self.ema_enabled or self.ema is None:
             return
@@ -195,7 +306,7 @@ class Trainer:
         if self.scaler:
             self.scaler.scale(loss).backward()
             if step:
-                self.apply_warmup()
+                self.warmup.step()
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
                 self.scaler.step(self.optimizer)
@@ -206,7 +317,7 @@ class Trainer:
         else:
             loss.backward()
             if step:
-                self.apply_warmup()
+                self.warmup.step()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -237,7 +348,7 @@ class Trainer:
             with autocast(device_type=self.device.type, enabled=self.config.training.mixed_precision):
                 preds         = self.model(categorical_features, continuous_features, lengths)
                 target_tensor = targets.view(-1)
-                raw_loss      = self.weighted_loss(preds, target_tensor)
+                raw_loss      = self.loss(preds, target_tensor)
                 loss          = raw_loss / self.grad_accum_steps
 
             is_last = (batch_idx + 1) == len(self.train_loader)
@@ -317,7 +428,7 @@ class Trainer:
         checkpoint = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
+            "scheduler_state_dict": self.scheduler_manager.state_dict(),
             "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
             "ema_state_dict": self.ema.state_dict() if self.ema else None,
             "global_step": self.global_step,
@@ -388,7 +499,7 @@ class Trainer:
             validation_metrics = self.evaluate(self.validation_loader)
             validation_rmse    = validation_metrics['rmse']
             
-            self.scheduler.step()
+            self.scheduler_manager.step(epoch=True)
             
             self.logger.info(
                 f"Epoch {epoch}:\n"

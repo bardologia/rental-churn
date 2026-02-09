@@ -81,6 +81,15 @@ class TrainingParams:
 
 
 @dataclass
+class LossParams:
+    huber_delta         : float = 1.0
+    quantile_weight     : float = 0.3
+    threshold_weight    : float = 0.2
+    quantiles           : List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
+    thresholds          : List[float] = field(default_factory=lambda: [15.0, 30.0])
+
+
+@dataclass
 class ArchitectureParams:
     max_seq_len                 : int   = 50
     min_seq_len                 : int   = 2
@@ -225,6 +234,7 @@ class Config:
     augmentation: AugmentationParams = field(default_factory=AugmentationParams)
     columns:      Columns = field(default_factory=Columns)
     training:     TrainingParams = field(default_factory=TrainingParams)
+    loss:         LossParams = field(default_factory=LossParams)
     architecture: ArchitectureParams = field(default_factory=ArchitectureParams)
     layerwise:    LayerWiseParams = field(default_factory=LayerWiseParams)
     ema:          EMAParams = field(default_factory=EMAParams)

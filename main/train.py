@@ -25,6 +25,7 @@ from core.model   import Model
 from core.trainer import Trainer
 from core.logger  import Logger
 from core.results import Results
+from core.logger  import TensorLogger, ModelSummary
 
 
 def train(config, use_cache, save_cache, save_results=False):
@@ -45,7 +46,6 @@ def train(config, use_cache, save_cache, save_results=False):
     os.makedirs(os.path.dirname(metadata_path),   exist_ok=True)
 
     logger = Logger(name="train", level="INFO", log_dir=run_dir)
-    trainer = None
 
     try:
         logger.info(f"[GPU] Name: {torch.cuda.get_device_name(0)}")
@@ -95,6 +95,13 @@ def train(config, use_cache, save_cache, save_results=False):
         config = config
     )    
 
+    summary = ModelSummary(model)
+    summary.run()
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    sample_batch = next(iter(train_loader))
+    tensor_logger = TensorLogger(model=model).attach().log_from_batch(sample_batch, device)
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -108,13 +115,13 @@ def train(config, use_cache, save_cache, save_results=False):
   
     evaluator = Results(
         model=trained_model,
-        device=trainer.device,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
 
     train_results = evaluator.run(train_loader)
     val_results   = evaluator.run(validation_loader)
     
-    test_results  = evaluator.run(test_loader, make_plots=True)
+    test_results = evaluator.run(test_loader, make_plots=True)
     test_plots   = test_results.get('plots', {})
        
     train_metrics = train_results['metrics']
@@ -122,6 +129,9 @@ def train(config, use_cache, save_cache, save_results=False):
     test_metrics  = test_results['metrics']
 
     metric_keys = sorted(set(train_metrics) | set(val_metrics) | set(test_metrics))
+
+    tensor_logger.save_markdown("C:\\Users\\victo\\Desktop\\rental-churn - 2\\rental-churn\\tensor_logger.md")
+    summary.save_markdown("C:\\Users\\victo\\Desktop\\rental-churn - 2\\rental-churn\\model_summary.md")
 
     def fmt(v):
         return "-" if v is None else f"{v:.4f}"
@@ -139,7 +149,7 @@ def train(config, use_cache, save_cache, save_results=False):
         "target_scaler"        : trained_model.target_scaler,
         "feature_scaler"       : trained_model.feature_scaler,
         "config"               : trained_model.config,
-        "categorical_maps"      : dataset_loader.categorical_maps,
+        "categorical_maps"     : dataset_loader.categorical_maps,
     }
 
     torch.save(metadata, metadata_path)
