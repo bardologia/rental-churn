@@ -2,18 +2,18 @@
 
 | Layer                                                            | Type                            | Parameters |
 | ---------------------------------------------------------------- | ------------------------------- | ---------- |
-| tokenizer                                                        | FeatureTokenizer                |     45,824 |
-| tokenizer.categorical_embeddings                                 | ModuleList                      |      8,064 |
+| tokenizer                                                        | FeatureTokenizer                |     58,240 |
+| tokenizer.categorical_embeddings                                 | ModuleList                      |     20,480 |
 | tokenizer.categorical_embeddings.0                               | Embedding                       |        384 |
-| tokenizer.categorical_embeddings.1                               | Embedding                       |        256 |
-| tokenizer.categorical_embeddings.2                               | Embedding                       |        512 |
-| tokenizer.categorical_embeddings.3                               | Embedding                       |        512 |
-| tokenizer.categorical_embeddings.4                               | Embedding                       |        640 |
-| tokenizer.categorical_embeddings.5                               | Embedding                       |        768 |
-| tokenizer.categorical_embeddings.6                               | Embedding                       |        384 |
-| tokenizer.categorical_embeddings.7                               | Embedding                       |        384 |
-| tokenizer.categorical_embeddings.8                               | Embedding                       |        512 |
-| tokenizer.categorical_embeddings.9                               | Embedding                       |        768 |
+| tokenizer.categorical_embeddings.1                               | Embedding                       |        512 |
+| tokenizer.categorical_embeddings.2                               | Embedding                       |        896 |
+| tokenizer.categorical_embeddings.3                               | Embedding                       |        640 |
+| tokenizer.categorical_embeddings.4                               | Embedding                       |      3,200 |
+| tokenizer.categorical_embeddings.5                               | Embedding                       |      1,920 |
+| tokenizer.categorical_embeddings.6                               | Embedding                       |      4,352 |
+| tokenizer.categorical_embeddings.7                               | Embedding                       |      2,944 |
+| tokenizer.categorical_embeddings.8                               | Embedding                       |      1,664 |
+| tokenizer.categorical_embeddings.9                               | Embedding                       |      1,024 |
 | tokenizer.categorical_embeddings.10                              | Embedding                       |        640 |
 | tokenizer.categorical_embeddings.11                              | Embedding                       |        384 |
 | tokenizer.categorical_embeddings.12                              | Embedding                       |        384 |
@@ -110,4 +110,4 @@
 | head_days.gated_residual_network_2.dropout_layer                 | Dropout                         |          0 |
 | head_days.output_layer                                           | Linear                          |         65 |
 
-**Total Parameters:** `5,943,042`
+**Total Parameters:** `5,980,290`

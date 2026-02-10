@@ -25,7 +25,7 @@ from core.model   import Model
 from core.trainer import Trainer
 from core.logger  import Logger
 from core.results import Results
-from core.logger  import TensorLogger, ModelSummary
+from core.logger  import TensorLogger, ModelSummary, TensorBoardMonitor
 
 
 def train(config, use_cache, save_cache, save_results=False):
@@ -102,13 +102,17 @@ def train(config, use_cache, save_cache, save_results=False):
     sample_batch = next(iter(train_loader))
     tensor_logger = TensorLogger(model=model).attach().log_from_batch(sample_batch, device)
 
+    tb_log_dir = os.path.join(run_dir, "tensorboard")
+    tb_monitor = TensorBoardMonitor(log_dir=tb_log_dir, enabled=True)
+    
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
         validation_loader=validation_loader,
         target_scaler=target_scaler,
         logger = logger,
-        config=config
+        config=config,
+        tb_monitor=tb_monitor
     )
     
     trained_model = trainer.fit()

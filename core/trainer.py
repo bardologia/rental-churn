@@ -10,6 +10,7 @@ import numpy as np
 import itertools
 import copy
 from tqdm.auto import tqdm
+from core.logger import TensorBoardMonitor
 
 
 class Loss(nn.Module):
@@ -53,7 +54,7 @@ class Loss(nn.Module):
         
         return loss
     
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor):
         huber = self.huber_loss(preds, targets)
         quantile = self.quantile_loss(preds, targets)
         threshold = self.threshold_focused_loss(preds, targets)
@@ -64,7 +65,13 @@ class Loss(nn.Module):
             self.threshold_weight * threshold
         )
         
-        return total_loss
+        components = {
+            'huber': huber.detach().mean(),
+            'quantile': quantile.detach().mean(),
+            'threshold': threshold.detach().mean()
+        }
+        
+        return total_loss, components
 
 
 class Warmup:
@@ -177,9 +184,11 @@ class Trainer:
         target_scaler=None,
         logger = None,
         config=None,
+        tb_monitor=None,
     ):
         self.logger = logger
-        self.config = config 
+        self.config = config
+        self.tb_monitor = tb_monitor 
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -282,8 +291,9 @@ class Trainer:
         for module_name, lr in lr_map.items():
             self.logger.info(f" [{module_name}] : {lr}'")
 
-    def loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        losses = self.criterion(preds, targets).view(-1)
+    def loss(self, preds: torch.Tensor, targets: torch.Tensor):
+        losses, components = self.criterion(preds, targets)
+        losses = losses.view(-1)
 
         if self.high_target_weight and self.target_scaler is not None and self.high_target_weight > 0:
             den_targets = np.expm1(self.target_scaler.inverse_transform(targets.detach().cpu().numpy().reshape(-1, 1))).reshape(-1)
@@ -291,9 +301,11 @@ class Trainer:
             mean_den = den_targets.mean().clamp_min(1e-8)
             weights = 1.0 + self.high_target_weight * (den_targets / mean_den)
             weighted = losses * weights
-            return weighted.mean()
-
-        return losses.mean()
+            final_loss = weighted.mean()
+        else:
+            final_loss = losses.mean()
+        
+        return final_loss, components
 
     def update_ema(self) -> None:
         if not self.ema_enabled or self.ema is None:
@@ -301,6 +313,10 @@ class Trainer:
         if self.global_step < self.ema_warmup_steps:
             return
         self.ema.update(self.model)
+     
+        if self.tb_monitor and self.global_step % 100 == 0:
+            self.tb_monitor.log_scalar('EMA/Active', 1.0, self.global_step)
+            self.tb_monitor.log_scalar('EMA/Decay', self.ema.decay, self.global_step)
    
     def backward(self, loss, step: bool):
         if self.scaler:
@@ -348,14 +364,34 @@ class Trainer:
             with autocast(device_type=self.device.type, enabled=self.config.training.mixed_precision):
                 preds         = self.model(categorical_features, continuous_features, lengths)
                 target_tensor = targets.view(-1)
-                raw_loss      = self.loss(preds, target_tensor)
-                loss          = raw_loss / self.grad_accum_steps
+                raw_loss, loss_components = self.loss(preds, target_tensor)
+                loss = raw_loss / self.grad_accum_steps
 
             is_last = (batch_idx + 1) == len(self.train_loader)
             should_step = ((batch_idx + 1) % self.grad_accum_steps == 0) or is_last
             self.backward(loss, step=should_step)
             running_loss += raw_loss.detach()
             num_batches += 1
+            
+            if self.tb_monitor and batch_idx % 10 == 0:
+                self.tb_monitor.log_batch_stats(batch_idx, raw_loss.item(), epoch if epoch else 0)
+                
+                self.tb_monitor.log_scalars('Loss/Components', {
+                    'Huber': loss_components['huber'].item(),
+                    'Quantile': loss_components['quantile'].item(),
+                    'Threshold': loss_components['threshold'].item()
+                }, self.global_step)
+                self.tb_monitor.log_scalar('Loss/Total', raw_loss.item(), self.global_step)
+                
+                for i, param_group in enumerate(self.optimizer.param_groups):
+                    self.tb_monitor.log_scalar(f'Train/LR_Group_{i}', param_group['lr'], self.global_step)
+            
+                if self.warmup and not self.warmup.is_finished():
+                    warmup_progress = self.warmup.current_step / max(self.warmup.warmup_steps, 1)
+                    self.tb_monitor.log_scalar('Train/Warmup_Progress', warmup_progress, self.global_step)
+              
+                accum_progress = (batch_idx % self.grad_accum_steps) / self.grad_accum_steps
+                self.tb_monitor.log_scalar('Train/GradAccum_Progress', accum_progress, self.global_step)
         
         average_loss = (running_loss / max(num_batches, 1)).item()    
         return average_loss
@@ -444,10 +480,11 @@ class Trainer:
         self.logger.info(f"[Checkpoint] Saved checkpoint to: {checkpoint_path}")
 
     @torch.no_grad()
-    def evaluate(self, loader):
+    def evaluate(self, loader, log_distributions=False, epoch=None):
         if self.ema_enabled and self.ema is not None:
             self.ema.apply_to(self.model)
         
+        self.model.eval()
         all_preds = []
         all_targets = []
         running_loss = torch.tensor(0.0, device=self.device)
@@ -461,8 +498,8 @@ class Trainer:
             
             preds         = self.model(categorical_features, continuous_features, lengths)
             target_tensor = targets.view(-1)
-            loss          = self.criterion(preds, target_tensor).mean()
-            running_loss += loss.detach()
+            loss, _       = self.criterion(preds, target_tensor)
+            running_loss += loss.mean().detach()
             
             num_batches += 1
             all_preds.append(preds.cpu())
@@ -480,6 +517,15 @@ class Trainer:
         den_targets = np.clip(den_targets, 0, None)
 
         metrics = self.compute_metrics(den_targets, den_preds, average_loss)
+        
+        if self.tb_monitor and log_distributions and epoch is not None:
+            self.tb_monitor.log_predictions_distribution(
+                torch.tensor(den_preds), 
+                torch.tensor(den_targets), 
+                epoch,
+                phase='Validation'
+            )
+        
         if self.ema_enabled and self.ema is not None:
             self.ema.restore(self.model)
         return metrics
@@ -490,14 +536,69 @@ class Trainer:
         self.logger.section("Model Training")
         self.logger.subsection("Training Progress")
         
+        if self.tb_monitor:
+            try:
+                sample_batch = next(iter(self.train_loader))
+                cat_feat, cont_feat, _, lengths = sample_batch
+                cat_feat = cat_feat[:1].to(self.device)
+                cont_feat = cont_feat[:1].to(self.device)
+                lengths = lengths[:1].to(self.device)
+                
+                # Criar um wrapper para melhor visualização do grafo
+                class ModelWrapper(nn.Module):
+                    def __init__(self, model):
+                        super().__init__()
+                        self.model = model
+                    
+                    def forward(self, cat_feat, cont_feat, lengths):
+                        return self.model(cat_feat, cont_feat, lengths)
+                
+                wrapped_model = ModelWrapper(self.model)
+                wrapped_model.eval()
+                
+                # Usar torch.jit.trace para melhor grafo
+                with torch.no_grad():
+                    traced_model = torch.jit.trace(
+                        wrapped_model,
+                        (cat_feat, cont_feat, lengths),
+                        strict=False
+                    )
+                    self.tb_monitor.log_model_graph(traced_model, (cat_feat, cont_feat, lengths))
+                
+                wrapped_model.train()
+                self.logger.info("[TensorBoard] Model graph logged successfully")
+            except Exception as e:
+                self.logger.warning(f"Could not log model graph: {e}")
+        
         best_rmse = float('inf')
         best_model_state = None
         
         patience_counter = 0
         for epoch in range(1, self.config.training.epochs + 1):
             train_loss         = self.train_epoch(epoch=epoch)
-            validation_metrics = self.evaluate(self.validation_loader)
+            validation_metrics = self.evaluate(self.validation_loader, log_distributions=True, epoch=epoch)
             validation_rmse    = validation_metrics['rmse']
+            
+            if self.tb_monitor:
+                self.tb_monitor.log_training_metrics(train_loss, epoch)
+                self.tb_monitor.log_validation_metrics(validation_metrics, epoch)
+                self.tb_monitor.log_learning_rates(self.optimizer, epoch)
+                self.tb_monitor.log_gpu_memory(epoch)
+                
+                # Log métricas de comparação Train vs Val
+                self.tb_monitor.log_scalars('Loss/Comparison', {
+                    'Train': train_loss,
+                    'Validation': validation_metrics['loss']
+                }, epoch)
+                
+                # Log EMA status por época
+                if self.ema_enabled and self.ema is not None:
+                    is_ema_active = self.global_step >= self.ema_warmup_steps
+                    self.tb_monitor.log_scalar('EMA/Active_Epoch', float(is_ema_active), epoch)
+                
+                if epoch == 1 or epoch % 5 == 0 or epoch == self.config.training.epochs:
+                    self.tb_monitor.log_gradients(self.model, epoch)
+                    self.tb_monitor.log_weights(self.model, epoch)
             
             self.scheduler_manager.step(epoch=True)
             
@@ -519,13 +620,25 @@ class Trainer:
                 patience_counter = 0
                 self.logger.info(f" New Best Model: RMSE={validation_rmse:.4f}")
                 self.save_checkpoint(validation_metrics)
+                
+                if self.tb_monitor:
+                    self.tb_monitor.log_scalar('Best/RMSE', best_rmse, epoch)
+                    self.tb_monitor.log_scalar('Best/Epoch', epoch, epoch)
             else:
                 patience_counter += 1
                 if patience_counter >= self.config.training.patience:
                     self.logger.warning(f"[Early Stopping] Training halted at epoch {epoch} (patience={self.config.training.patience}). Best RMSE: {best_rmse:.4f}")
                     break
+            
+            # Log convergence metrics
+            if self.tb_monitor:
+                self.tb_monitor.log_convergence_metrics(validation_rmse, best_rmse, patience_counter, epoch)
         
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
+        
+        if self.tb_monitor:
+            final_val_metrics = self.evaluate(self.validation_loader)
+            self.tb_monitor.log_hyperparameters(self.config, final_val_metrics)
 
         return self.model

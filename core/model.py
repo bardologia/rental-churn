@@ -109,23 +109,25 @@ class RoPE(nn.Module):
     def _rotate_half(self, tensor: torch.Tensor) -> torch.Tensor:
         first_half, second_half = tensor[..., :tensor.shape[-1]//2], tensor[..., tensor.shape[-1]//2:]
         return torch.cat([-second_half, first_half], dim=-1)
+    
+    @torch.jit.unused
+    def _extend_cached_values(self, sequence_length: int, cos_values: torch.Tensor, sin_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        additional_positions = torch.arange(self.max_sequence_length, sequence_length, device=self.inverse_frequency.device).type_as(self.inverse_frequency)
+        additional_frequencies = torch.einsum('i,j->ij', additional_positions, self.inverse_frequency)
+        additional_embeddings = torch.cat([additional_frequencies, additional_frequencies], dim=-1)
+        additional_cos = additional_embeddings.cos().unsqueeze(0).unsqueeze(0)
+        additional_sin = additional_embeddings.sin().unsqueeze(0).unsqueeze(0)
+        cos_values = torch.cat([cos_values, additional_cos], dim=2)
+        sin_values = torch.cat([sin_values, additional_sin], dim=2)
+        return cos_values, sin_values
         
     def forward(self, query: torch.Tensor, key: torch.Tensor, sequence_length: int) -> Tuple[torch.Tensor, torch.Tensor]:
         actual_length = min(sequence_length, self.max_sequence_length)
         cos_values = self.cos_cached[:, :, :actual_length, :].to(query.dtype)
         sin_values = self.sin_cached[:, :, :actual_length, :].to(query.dtype)
         
-       
         if sequence_length > self.max_sequence_length:
-            additional_positions = torch.arange(self.max_sequence_length, sequence_length, device=self.inverse_frequency.device).type_as(self.inverse_frequency)
-            
-            additional_frequencies = torch.einsum('i,j->ij', additional_positions, self.inverse_frequency)
-            additional_embeddings = torch.cat([additional_frequencies, additional_frequencies], dim=-1)
-            additional_cos = additional_embeddings.cos().unsqueeze(0).unsqueeze(0)
-            additional_sin = additional_embeddings.sin().unsqueeze(0).unsqueeze(0)
-            
-            cos_values = torch.cat([cos_values, additional_cos], dim=2)
-            sin_values = torch.cat([sin_values, additional_sin], dim=2)
+            cos_values, sin_values = self._extend_cached_values(sequence_length, cos_values, sin_values)
         
         query_embedded = (query * cos_values) + (self._rotate_half(query) * sin_values)
         key_embedded = (key * cos_values) + (self._rotate_half(key) * sin_values)

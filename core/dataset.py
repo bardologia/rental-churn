@@ -147,9 +147,9 @@ class SequentialDataset(Dataset):
         protected_cont_indices=None,
         cfg=None,
     ):
-        self.categorical_data = torch.as_tensor(categorical_data, dtype=torch.long)
-        self.continuous_data = torch.as_tensor(continuous_data, dtype=torch.float32)
-        self.targets = torch.as_tensor(targets, dtype=torch.float32)
+        self.categorical_data = torch.as_tensor(categorical_data.copy(), dtype=torch.long)
+        self.continuous_data = torch.as_tensor(continuous_data.copy(), dtype=torch.float32)
+        self.targets = torch.as_tensor(targets.copy(), dtype=torch.float32)
         self.indices = indices
         self.config = cfg
         self.augment = (self.config.architecture.use_augmentation if (self.config is not None and self.config.architecture is not None) else False) and augment

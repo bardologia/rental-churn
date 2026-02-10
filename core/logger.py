@@ -6,8 +6,8 @@ import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import torch
-import torch
 import torch.nn as nn
+import numpy as np
 from core.model import StochasticDepth
 from core.model import (
     FourierFeatures,
@@ -273,4 +273,279 @@ class ModelSummary:
     def save_markdown(self, path: str, title: str = "Model Summary"):
         md = self.to_markdown(title=title)
         Path(path).write_text(md, encoding="utf-8")
+
+
+class TensorBoardMonitor:
+    """
+    Classe especializada para monitorar o treinamento do modelo usando TensorBoard.
+    Monitora métricas, gradientes, pesos, learning rates e cria visualizações detalhadas.
+    """
+    def __init__(self, log_dir: str = "runs", enabled: bool = True):
+        self.enabled = enabled
+        self.log_dir = log_dir
+        self.writer = None
+        self.global_step = 0
+        
+        if self.enabled:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                os.makedirs(self.log_dir, exist_ok=True)
+                self.writer = SummaryWriter(log_dir=self.log_dir)
+                print(f"[TensorBoard] Monitoring enabled at: {self.log_dir}")
+                print(f"[TensorBoard] Run: tensorboard --logdir={self.log_dir}")
+            except ImportError:
+                print("[TensorBoard] Warning: tensorboard not installed. Monitoring disabled.")
+                self.enabled = False
+                self.writer = None
+    
+    def log_scalar(self, tag: str, value: float, step: int = None):
+        """Log um valor escalar."""
+        if not self.enabled or self.writer is None:
+            return
+        step = step if step is not None else self.global_step
+        self.writer.add_scalar(tag, value, step)
+    
+    def log_scalars(self, main_tag: str, tag_scalar_dict: dict, step: int = None):
+        """Log múltiplos valores escalares."""
+        if not self.enabled or self.writer is None:
+            return
+        step = step if step is not None else self.global_step
+        self.writer.add_scalars(main_tag, tag_scalar_dict, step)
+    
+    def log_histogram(self, tag: str, values, step: int = None):
+        """Log um histograma de valores."""
+        if not self.enabled or self.writer is None:
+            return
+        step = step if step is not None else self.global_step
+        if isinstance(values, torch.Tensor):
+            self.writer.add_histogram(tag, values, step)
+    
+    def log_training_metrics(self, train_loss: float, epoch: int):
+        """Log métricas de treinamento."""
+        if not self.enabled:
+            return
+        self.log_scalar('Loss/Train', train_loss, epoch)
+    
+    def log_validation_metrics(self, metrics: dict, epoch: int):
+        """Log métricas completas de validação."""
+        if not self.enabled:
+            return
+        
+        # Métricas principais
+        main_metrics = ['loss', 'mae', 'rmse', 'r2', 'std', 'medae', 'max_error']
+        for metric in main_metrics:
+            if metric in metrics:
+                self.log_scalar(f'Metrics/{metric.upper()}', metrics[metric], epoch)
+        
+        # Percentis
+        percentiles = ['p50', 'p90', 'p95']
+        for p in percentiles:
+            if p in metrics:
+                self.log_scalar(f'Percentiles/{p.upper()}', metrics[p], epoch)
+        
+        # Error bins (distribuição de erros) - usando log_scalar individual para evitar problemas com caracteres especiais
+        error_bins = [
+            ('0-5', metrics.get('error_0_5', 0)),
+            ('5-10', metrics.get('error_5_10', 0)),
+            ('10-15', metrics.get('error_10_15', 0)),
+            ('15-20', metrics.get('error_15_20', 0)),
+            ('20-25', metrics.get('error_20_25', 0)),
+            ('above_25', metrics.get('error_above_25', 0))
+        ]
+        for bin_name, value in error_bins:
+            self.log_scalar(f'ErrorBins_Distribution/{bin_name}', value, epoch)
+        
+        # Error bins como histograma consolidado para visualização melhor
+        error_dict = {k: v for k, v in error_bins}
+        self.log_scalars('ErrorBins/Overview', error_dict, epoch)
+        
+        # Target bins (MAE por range de target) - usando log_scalar individual
+        target_bins = [
+            ('0-5', metrics.get('target_0_5', float('nan'))),
+            ('5-10', metrics.get('target_5_10', float('nan'))),
+            ('10-15', metrics.get('target_10_15', float('nan'))),
+            ('15-20', metrics.get('target_15_20', float('nan'))),
+            ('20-25', metrics.get('target_20_25', float('nan'))),
+            ('above_25', metrics.get('target_above_25', float('nan')))
+        ]
+        # Filtrar NaN values e log individualmente
+        valid_target_bins = {}
+        for bin_name, value in target_bins:
+            if not (isinstance(value, float) and (value != value or value == float('inf') or value == float('-inf'))):
+                self.log_scalar(f'TargetBins_MAE/{bin_name}', value, epoch)
+                valid_target_bins[bin_name] = value
+        
+        # Target bins como overview
+        if valid_target_bins:
+            self.log_scalars('TargetBins/Overview', valid_target_bins, epoch)
+    
+    def log_learning_rates(self, optimizer, epoch: int):
+        """Log learning rates de cada param group."""
+        if not self.enabled:
+            return
+        
+        for i, param_group in enumerate(optimizer.param_groups):
+            lr = param_group['lr']
+            self.log_scalar(f'LearningRate/Group_{i}', lr, epoch)
+    
+    def log_gradients(self, model: nn.Module, epoch: int):
+        """Log estatísticas dos gradientes."""
+        if not self.enabled:
+            return
+        
+        total_norm = 0.0
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2).item()
+                total_norm += param_norm ** 2
+                
+                # Log histograma de gradientes para camadas principais
+                if any(key in name for key in ['weight', 'bias']):
+                    self.log_histogram(f'Gradients/{name}', param.grad.data, epoch)
+        
+        total_norm = total_norm ** 0.5
+        self.log_scalar('Gradients/Total_Norm', total_norm, epoch)
+    
+    def log_weights(self, model: nn.Module, epoch: int):
+        """Log histogramas dos pesos do modelo."""
+        if not self.enabled:
+            return
+        
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                if any(key in name for key in ['weight', 'bias']):
+                    self.log_histogram(f'Weights/{name}', param.data, epoch)
+                
+                self.log_scalar(f'Weights_Stats/{name}_mean', param.data.mean().item(), epoch)
+                if param.data.numel() > 1:
+                    self.log_scalar(f'Weights_Stats/{name}_std', param.data.std().item(), epoch)
+    
+    def log_predictions_distribution(self, predictions: torch.Tensor, targets: torch.Tensor, epoch: int, phase: str = 'Validation'):
+        """Log distribuição de predições vs targets."""
+        if not self.enabled:
+            return
+        
+        self.log_histogram(f'{phase}/Predictions', predictions, epoch)
+        self.log_histogram(f'{phase}/Targets', targets, epoch)
+        
+        # Calcular erros
+        if isinstance(predictions, torch.Tensor):
+            predictions_np = predictions.detach().cpu().numpy() if predictions.is_cuda else predictions.numpy()
+        else:
+            predictions_np = predictions
+            
+        if isinstance(targets, torch.Tensor):
+            targets_np = targets.detach().cpu().numpy() if targets.is_cuda else targets.numpy()
+        else:
+            targets_np = targets
+        
+        errors = predictions_np - targets_np
+        abs_errors = np.abs(errors)
+        
+        # Log histograma de erros
+        self.log_histogram(f'{phase}/Errors', torch.from_numpy(errors), epoch)
+        self.log_histogram(f'{phase}/Absolute_Errors', torch.from_numpy(abs_errors), epoch)
+        
+        # Log estatísticas
+        self.log_scalar(f'{phase}/Predictions_Mean', predictions.mean().item() if isinstance(predictions, torch.Tensor) else float(predictions_np.mean()), epoch)
+        self.log_scalar(f'{phase}/Predictions_Std', predictions.std().item() if isinstance(predictions, torch.Tensor) else float(predictions_np.std()), epoch)
+        self.log_scalar(f'{phase}/Targets_Mean', targets.mean().item() if isinstance(targets, torch.Tensor) else float(targets_np.mean()), epoch)
+        self.log_scalar(f'{phase}/Targets_Std', targets.std().item() if isinstance(targets, torch.Tensor) else float(targets_np.std()), epoch)
+        
+        # Log estatísticas de erro
+        self.log_scalar(f'{phase}/Error_Mean', float(errors.mean()), epoch)
+        self.log_scalar(f'{phase}/Error_Std', float(errors.std()), epoch)
+        self.log_scalar(f'{phase}/Absolute_Error_Mean', float(abs_errors.mean()), epoch)
+        self.log_scalar(f'{phase}/Absolute_Error_Median', float(np.median(abs_errors)), epoch)
+    
+    def log_batch_stats(self, batch_idx: int, loss: float, epoch: int):
+        """Log estatísticas de batch individual."""
+        if not self.enabled:
+            return
+        
+        global_batch = epoch * 1000 + batch_idx  # Aproximação
+        self.log_scalar('Batch/Loss', loss, global_batch)
+    
+    def log_gpu_memory(self, epoch: int):
+        """Log uso de memória GPU."""
+        if not self.enabled or not torch.cuda.is_available():
+            return
+        
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+        
+        self.log_scalar('GPU/Memory_Allocated_GB', allocated, epoch)
+        self.log_scalar('GPU/Memory_Reserved_GB', reserved, epoch)
+        self.log_scalar('GPU/Max_Memory_Allocated_GB', max_allocated, epoch)
+    
+    def log_model_graph(self, model: nn.Module, input_sample: tuple):
+        """Log o grafo computacional do modelo."""
+        if not self.enabled or self.writer is None:
+            return
+        
+        try:
+            self.writer.add_graph(model, input_sample)
+        except Exception as e:
+            print(f"[TensorBoard] Warning: Could not log model graph: {e}")
+    
+    def log_hyperparameters(self, config, metrics: dict):
+        """Log hiperparâmetros e métricas finais."""
+        if not self.enabled or self.writer is None:
+            return
+        
+        try:
+            # Extrair principais hiperparâmetros do config
+            hparams = {
+                'epochs': config.training.epochs,
+                'batch_size': config.training.batch_size,
+                'dropout': config.training.dropout,
+                'weight_decay': config.training.weight_decay,
+                'warmup_steps': config.training.warmup_steps,
+                'max_grad_norm': config.training.max_grad_norm,
+                'mixed_precision': config.training.mixed_precision,
+                'use_ema': config.ema.use_ema,
+                'ema_decay': config.ema.ema_decay if config.ema.use_ema else 0,
+            }
+            
+            # Métricas finais principais
+            final_metrics = {
+                'final_mae': metrics.get('mae', 0),
+                'final_rmse': metrics.get('rmse', 0),
+                'final_r2': metrics.get('r2', 0),
+            }
+            
+            self.writer.add_hparams(hparams, final_metrics)
+        except Exception as e:
+            print(f"[TensorBoard] Warning: Could not log hyperparameters: {e}")
+    
+    def log_text(self, tag: str, text: str, step: int = None):
+        """Log texto."""
+        if not self.enabled or self.writer is None:
+            return
+        step = step if step is not None else self.global_step
+        self.writer.add_text(tag, text, step)
+    
+    def log_convergence_metrics(self, current_loss: float, best_loss: float, patience_counter: int, epoch: int):
+        """Log métricas de convergência e early stopping."""
+        if not self.enabled:
+            return
+        
+        self.log_scalar('Convergence/Current_Best_Loss', best_loss, epoch)
+        self.log_scalar('Convergence/Patience_Counter', patience_counter, epoch)
+        
+        # Calcular improvement ratio
+        if best_loss > 0:
+            improvement_ratio = (best_loss - current_loss) / best_loss
+            self.log_scalar('Convergence/Improvement_Ratio', improvement_ratio, epoch)
+    
+    def increment_step(self):
+        """Incrementa o step global."""
+        self.global_step += 1
+    
+    def close(self):
+        """Fecha o writer do TensorBoard."""
+        if self.enabled and self.writer is not None:
+            self.writer.close()
+            print(f"[TensorBoard] Closed writer for: {self.log_dir}")
  

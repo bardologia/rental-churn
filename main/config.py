@@ -22,7 +22,7 @@ class LoadParams:
     use_cache            : bool  = True
     sample_fraction      : float = 1.0
     load_sample_fraction : float = 0.01
-    user_sample_count    : int   = 60000
+    user_sample_count    : int   = 60
     random_state         : int   = 42
 
 
@@ -62,7 +62,7 @@ class LayerWiseParams:
 @dataclass
 class TrainingParams:
     batch_size         : int   = 256
-    epochs             : int   = 35
+    epochs             : int   = 5
     warmup_enabled     : bool  = True
     warmup_steps       : int   = 1000
     warmup_start_factor: float = 0.1
