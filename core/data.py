@@ -65,17 +65,20 @@ class FeatureEngineer:
         d = dataframe[due_date_col]
         days_in_month = d.dt.daysinmonth
 
+        dataframe['venc_dayofweek']      = d.dt.dayofweek
+        dataframe['venc_day']            = d.dt.day
+        dataframe['venc_month']          = d.dt.month
         dataframe['venc_quarter']        = d.dt.quarter
-        dataframe['venc_is_weekend']     = (d.dt.dayofweek >= weekend_start_day).astype(int)
+        dataframe['venc_is_weekend']     = (dataframe['venc_dayofweek'] >= weekend_start_day).astype(int)
         dataframe['venc_is_month_start'] = d.dt.is_month_start.astype(int)
         dataframe['venc_is_month_end']   = d.dt.is_month_end.astype(int)
      
-        dataframe['venc_dayofweek_sin'] = np.sin(2 * np.pi * d.dt.dayofweek / days_in_week)
-        dataframe['venc_dayofweek_cos'] = np.cos(2 * np.pi * d.dt.dayofweek / days_in_week)
-        dataframe['venc_day_sin']       = np.sin(2 * np.pi * d.dt.day / days_in_month)
-        dataframe['venc_day_cos']       = np.cos(2 * np.pi * d.dt.day / days_in_month)
-        dataframe['venc_month_sin']     = np.sin(2 * np.pi * d.dt.month / months_in_year)
-        dataframe['venc_month_cos']     = np.cos(2 * np.pi * d.dt.month / months_in_year)
+        dataframe['venc_dayofweek_sin'] = np.sin(2 * np.pi * dataframe['venc_dayofweek'] / days_in_week)
+        dataframe['venc_dayofweek_cos'] = np.cos(2 * np.pi * dataframe['venc_dayofweek'] / days_in_week)
+        dataframe['venc_day_sin']       = np.sin(2 * np.pi * dataframe['venc_day'] / days_in_month)
+        dataframe['venc_day_cos']       = np.cos(2 * np.pi * dataframe['venc_day'] / days_in_month)
+        dataframe['venc_month_sin']     = np.sin(2 * np.pi * dataframe['venc_month'] / months_in_year)
+        dataframe['venc_month_cos']     = np.cos(2 * np.pi * dataframe['venc_month'] / months_in_year)
         
         self.logger.subsection(f"[Temporal Features] Extracted 10 features ")
         return dataframe

@@ -70,16 +70,13 @@ def infer(model_path: str = None, input_path: str = None, batch_size: int = 256)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run inference with trained rental churn prediction model")
-    parser.add_argument("--model-path", type=str, default=None, help="Path to the model directory (default: churn-model/small_model)",)
-    parser.add_argument("--save", action="store_true", help="Whether to save predictions to a CSV file",)
-    parser.add_argument("--batch-size", type=int, default=256,   help="Batch size for processing (default: 256)",)
-    args = parser.parse_args()
+    model_path = r"C:\Users\victo\Desktop\rental-churn - 2\churn-model\small_model"
+    input_path = r"C:\Users\victo\Desktop\rental-churn - 2\data\inference.parquet"
 
     predictions, output_path = infer(
-        model_path=args.model_path,
-        save_predictions=args.save,
-        batch_size=args.batch_size,
+        model_path=model_path,
+        input_path=input_path,
+        batch_size=256,
     )
 
 

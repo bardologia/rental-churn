@@ -5,6 +5,7 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import torch
 from datetime import datetime
+from torch.utils.tensorboard import SummaryWriter
 
 torch.backends.cudnn.benchmark        = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -23,17 +24,19 @@ from core.model   import Model
 from core.trainer import Trainer
 from core.logger  import Logger, Tracker
 from core.results import Results
-from core.logger  import TensorLogger, ModelSummary, TensorBoardMonitor
+from core.logger  import ModelSummary
+
 
 
 def train(config, use_cache, save_results=False):
     project_root = os.path.abspath(os.path.join(current_dir, '..'))
     
-    run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(project_root, config.paths.runs_dir, run_id)
+    run_id      = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir     = os.path.join(project_root, config.paths.runs_dir, run_id)
+    tracker_dir = os.path.join(run_dir, "tracker")
     
-    raw_path   = os.path.join(project_root, config.paths.raw_data)
-    train_path = os.path.join(project_root, config.paths.train_data)
+    raw_path   = r"C:\Users\victo\Desktop\rental-churn - 2\data\raw.parquet"  
+    train_path = r"C:\Users\victo\Desktop\rental-churn - 2\data\train.parquet"
     
     state_dict_path = os.path.join(run_dir, "model", "model_state_dict.pt")
     metadata_path   = os.path.join(run_dir, "model", "model_metadata.pt")
@@ -44,8 +47,9 @@ def train(config, use_cache, save_results=False):
     os.makedirs(os.path.dirname(state_dict_path), exist_ok=True)
     os.makedirs(os.path.dirname(metadata_path),   exist_ok=True)
 
+    writer  = SummaryWriter(log_dir=tracker_dir)
     logger  = Logger(name="train", level="INFO", log_dir=run_dir)
-    tracker = Tracker(writer=logger.writer)
+    tracker = Tracker(writer=writer)
 
     if config.overfit.overfit_single_batch:
         config.training.dropout               = config.overfit.overfit_dropout
@@ -53,6 +57,7 @@ def train(config, use_cache, save_results=False):
         config.architecture.use_augmentation  = config.overfit.overfit_use_augmentation
         config.training.weight_decay          = config.overfit.overfit_weight_decay
         config.training.patience              = config.overfit.overfit_patience
+        config.early_stopping.patience        = config.overfit.overfit_patience
         config.training.epochs                = config.overfit.overfit_epochs
         config.scheduler.scheduler_patience   = config.overfit.overfit_patience
         config.training.mixed_precision       = config.overfit.overfit_mixed_precision
@@ -62,8 +67,8 @@ def train(config, use_cache, save_results=False):
         config.load.user_sample_count         = config.overfit.overfit_number_of_users
         config.architecture.min_seq_len       = config.overfit.overfit_min_length
         logger.section(f"[Overfit Single Batch Mode Enabled]")
-        logger.warning("Overfit single batch mode: Disabled dropout, augmentation, weight decay, mixed precision")
-        logger.warning("Increased epochs and patience to allow overfitting \n")
+        logger.subsection("Overfit single batch mode: Disabled dropout, augmentation, weight decay, mixed precision")
+        logger.subsection("Increased epochs and patience to allow overfitting \n")
 
     logger.section(f"[Cache]")
     if use_cache:
@@ -110,7 +115,7 @@ def train(config, use_cache, save_results=False):
     trained_model = trainer.fit()
     
     logger.section(f"[Evaluation]")
-    evaluator = Results(model=trained_model, device=config.device)
+    evaluator = Results(model=trained_model, device=config.training.device)
 
     train_results = evaluator.run(train_loader)
     val_results   = evaluator.run(validation_loader)
@@ -186,6 +191,5 @@ if __name__ == "__main__":
     trained_model, metadata, train_metrics, val_metrics, test_metrics = train(
         config,
         use_cache=args.use_cache,
-        save_cache=args.save_cache,
         save_results=args.save_results,
     )

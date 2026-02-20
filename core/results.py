@@ -93,20 +93,19 @@ class Results:
         bias = float(np.mean(signed_err))  
         bias_pct = float((bias / np.mean(den_targets) * 100)) if np.mean(den_targets) != 0 else 0
         
-        mape = float(np.mean(np.abs((den_targets - den_preds) / (den_targets + 1e-8))) * 100)
-        
-        is_delayed = den_targets > 0
-        predicted_delayed = den_preds > 0
-        
-        tp = np.sum((predicted_delayed) & (is_delayed))
-        tn = np.sum((~predicted_delayed) & (~is_delayed))
-        fp = np.sum((predicted_delayed) & (~is_delayed))
-        fn = np.sum((~predicted_delayed) & (is_delayed))
-        
-        sensitivity = float(tp / (tp + fn)) if (tp + fn) > 0 else 0 
-        specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0 
-        precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0    
-        f1_score = float(2 * (precision * sensitivity) / (precision + sensitivity)) if (precision + sensitivity) > 0 else 0
+        non_zero_target_mask = den_targets > 1e-8
+        if np.any(non_zero_target_mask):
+            mape = float(
+                np.mean(
+                    np.abs(
+                        (den_targets[non_zero_target_mask] - den_preds[non_zero_target_mask])
+                        / den_targets[non_zero_target_mask]
+                    )
+                )
+                * 100
+            )
+        else:
+            mape = float('nan')
         
         q1_targets = np.percentile(den_targets, 25)
         q3_targets = np.percentile(den_targets, 75)
@@ -144,11 +143,6 @@ class Results:
             'target_15_20': mean_target_range(15, 20),
             'target_20_25': mean_target_range(20, 25),
             'target_above_25': mean_target_range(25, 30),
-            
-            'sensitivity': sensitivity,
-            'specificity': specificity,
-            'precision': precision,
-            'f1_score': f1_score,
             
             'mae_q1_low': mae_q1,
             'mae_mid': mae_mid,
@@ -308,7 +302,7 @@ class Results:
         ax10.set_yticklabels(['No Delay (True)', 'Delay (True)'])
         ax10.set_ylabel('True Label')
         ax10.set_xlabel('Predicted Label')
-        ax10.set_title(f'Confusion Matrix (Threshold = {threshold} days)\nSensitivity={tp/(tp+fn):.2f}, Specificity={tn/(tn+fp):.2f}')
+        ax10.set_title(f'Confusion Matrix (Threshold = {threshold} days)')
         
         for i in range(2):
             for j in range(2):
@@ -362,15 +356,21 @@ class Results:
         axes14[0].legend()
         axes14[0].grid(True, linestyle='--', alpha=0.6)
         
-        kde_targets = gaussian_kde(den_targets.flatten())
-        kde_preds = gaussian_kde(den_preds.flatten())
         x_range = np.linspace(min(den_targets.min(), den_preds.min()), max(den_targets.max(), den_preds.max()), 200)
-        axes14[1].plot(x_range, kde_targets(x_range), label='True (KDE)', linewidth=2, color='blue')
-        axes14[1].plot(x_range, kde_preds(x_range), label='Predicted (KDE)', linewidth=2, color='red')
+        has_kde_lines = False
+        try:
+            kde_targets = gaussian_kde(den_targets.flatten())
+            kde_preds = gaussian_kde(den_preds.flatten())
+            axes14[1].plot(x_range, kde_targets(x_range), label='True (KDE)', linewidth=2, color='blue')
+            axes14[1].plot(x_range, kde_preds(x_range), label='Predicted (KDE)', linewidth=2, color='red')
+            has_kde_lines = True
+        except np.linalg.LinAlgError:
+            axes14[1].text(0.5, 0.5, 'KDE unavailable for singular data', ha='center', va='center', transform=axes14[1].transAxes)
         axes14[1].set_title('Kernel Density Estimation')
         axes14[1].set_xlabel('Days to Payment')
         axes14[1].set_ylabel('Density')
-        axes14[1].legend()
+        if has_kde_lines:
+            axes14[1].legend()
         axes14[1].grid(True, linestyle='--', alpha=0.6)
         fig14.tight_layout()
         figs['distribution_comparison'] = fig14

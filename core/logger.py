@@ -45,7 +45,7 @@ class Logger:
         if self.logger.hasHandlers():
             self.logger.handlers.clear()
             
-        log_level = self.LOG_LEVELS.get(str(level).upper(), logging.INFO)
+        log_level = self.LOG_LEVELS.get(str(level), logging.INFO)
         self.logger.setLevel(log_level)
         
         file_formatter = logging.Formatter(
@@ -71,7 +71,7 @@ class Logger:
     
     def section(self, title: str):
         self.logger.info("")
-        self.logger.info(f">>> {str(title).upper()}")
+        self.logger.info(f">>> {str(title)}")
     
     def subsection(self, title: str):
         self.logger.info(f"  > {title}")
@@ -107,7 +107,7 @@ class Logger:
 
 
 class ShapeLogger:
-    def __init__(self, model, include_types = (
+    def __init__(self, model, logger, include_types = (
     nn.Embedding,
     nn.Dropout,
     nn.Linear,
@@ -126,6 +126,7 @@ class ShapeLogger:
     FeatureTokenizer,
 )):
         self.model = model
+        self.logger = logger
         self.include_types = include_types
         self.records = []
         self.hooks = []
@@ -267,8 +268,19 @@ class ModelSummary:
         return "\n".join(md)
 
     def save_markdown(self, path: str, title: str = "Model Summary"):
+        output_path = Path(path)
+
+        if output_path.suffix == "":
+            if isinstance(title, str) and title.lower().endswith(".md"):
+                output_path = output_path / title
+                title = "Model Summary"
+            else:
+                output_path = output_path / "model_summary.md"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         md = self.to_markdown(title=title)
-        Path(path).write_text(md, encoding="utf-8")
+        output_path.write_text(md, encoding="utf-8")
 
 
 class Tracker:

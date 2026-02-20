@@ -5,8 +5,8 @@ from typing import List, Optional
 @dataclass
 class PathsDetails:
     data_dir             : str = "data"
-    raw_data             : str = "data/raw_data.parquet"
-    train_data           : str = "data/training_data.parquet"
+    raw_data             : str = "data/raw.parquet"
+    train_data           : str = "data/training.parquet"
     runs_dir             : str = "runs"
     ablation_dir         : str = "ablation"
 
@@ -89,16 +89,18 @@ class TrainingParams:
     pin_memory         : bool  = True
     persistent_workers : bool  = True
     prefetch_factor    : int   = 4
-    device             : str   = None
+    device             : str   = "cuda"
 
 
 @dataclass
 class LossParams:
-    huber_delta         : float = 1.0
-    quantile_weight     : float = 0.3
-    threshold_weight    : float = 0.2
-    quantiles           : List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
-    thresholds          : List[float] = field(default_factory=lambda: [15.0, 30.0])
+    huber_delta               : float = 1.0
+    quantile_weight           : float = 0.3
+    threshold_weight          : float = 0.2
+    threshold_proximity_width : float = 5.0
+    
+    quantiles                 : List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
+    thresholds                : List[float] = field(default_factory=lambda: [15.0, 30.0])
 
 
 @dataclass
@@ -107,11 +109,11 @@ class ArchitectureParams:
     min_seq_len                 : int   = 2
     hidden_dim                  : int   = 128
     num_attention_heads         : int   = 4
-    num_invoice_encoder_layers  : int   = 1
-    num_sequence_encoder_layers : int   = 3
+    num_invoice_encoder_layers  : int   = 2
+    num_sequence_encoder_layers : int   = 4
     drop_path_rate              : float = 0.10
     use_augmentation            : bool  = True
-    augment_prob                : float = 0.25
+    augment_prob                : float = 0.15
     embedding_dropout           : float = 0.05
     periodic_sigma              : float = 1.0
     rotary_embedding_base       : float = 10000.0
@@ -121,7 +123,7 @@ class ArchitectureParams:
 
 @dataclass
 class CosineSchedulerParams:
-    t_max: int = None  
+    t_max: int = 35
     eta_min: float = 1e-6
 
 
@@ -142,32 +144,33 @@ class EarlyStoppingParams:
 
 @dataclass
 class OverfitParams:
-    overfit_single_batch     : bool  = False
+    overfit_single_batch     : bool  = True
+    overfit_sequence_count   : int   = 2
     overfit_epochs           : int   = 100
     overfit_patience         : int   = 100
     overfit_dropout          : float = 0.0
     overfit_weight_decay     : float = 0.0
-    overfit_number_of_users  : int   = 3
+    overfit_number_of_users  : int   = 10
     overfit_min_length       : int   = 2
     overfit_test_size        : float = 0.3
     overfit_val_size         : float = 0.3
-    overfit_use_ema          : bool  = True
-    overfit_use_augmentation : bool  = True
-    overfit_mixed_precision  : bool  = True
+    overfit_use_ema          : bool  = False
+    overfit_use_augmentation : bool  = False
+    overfit_mixed_precision  : bool  = False
 
 
 @dataclass
 class AblationParams:
-    user_sample_count: int = 300
-    hidden_dim: int = 128
-    num_invoice_encoder_layers: int = 1
-    num_sequence_encoder_layers: int = 1
-    num_attention_heads: int = 4
-    training_epochs: int = 10
-    patience: int = 4
-    scheduler_patience: int = 2
-    overfit_single_batch: bool = True
-    metric: str = "rmse"
+    user_sample_count           : int  = 300
+    hidden_dim                  : int  = 128
+    num_invoice_encoder_layers  : int  = 2
+    num_sequence_encoder_layers : int  = 4
+    num_attention_heads         : int  = 4
+    training_epochs             : int  = 35
+    patience                    : int  = 6
+    scheduler_patience          : int  = 3
+    overfit_single_batch        : bool = True
+    metric                      : str  = "rmse"
 
 
 @dataclass
@@ -193,7 +196,6 @@ class Columns:
         'venc_dayofweek', 'venc_quarter', 'venc_is_weekend', 
         'venc_is_month_start', 'venc_is_month_end', 
         'is_first_invoice', 'is_improving', 'is_first_contract', 
-        'forma_pagamento_caucao', 
     ])
 
     cont_cols: List[str] = field(default_factory=lambda: [
@@ -233,34 +235,34 @@ class Columns:
     paid_value_col       : str = 'valor_pago_brl'
     security_deposit_col : str = 'valor_caucao_brl'
     
-    sort_cols: List[str] = field(default_factory=lambda: ['usuarioId', 'vencimentoData', 'ordem_parcela'])
-    group_cols: List[str] = field(default_factory=lambda: ['usuarioId'])
+    sort_cols  : List[str] = field(default_factory=lambda: ['usuarioId', 'vencimentoData', 'ordem_parcela'])
+    group_cols : List[str] = field(default_factory=lambda: ['usuarioId'])
     
-    delay_clipped_col: str = 'delay_clipped'
-    delay_is_known_col: str = 'delay_is_known'
-    target_col_name: str = 'target_days_to_payment'
+    delay_clipped_col  : str = 'delay_clipped'
+    delay_is_known_col : str = 'delay_is_known'
+    target_col_name    : str = 'target_days_to_payment'
 
     no_scale_cols: List[str] = field(default_factory=lambda: ['delay_is_known'])
 
 
 @dataclass
 class Config:
-    paths:        PathsDetails = field(default_factory=PathsDetails)
-    load:         LoadParams = field(default_factory=LoadParams)
-    split:        SplitParams = field(default_factory=SplitParams)
-    target:       TargetParams = field(default_factory=TargetParams)
-    temporal:     TemporalFeatureParams = field(default_factory=TemporalFeatureParams)
-    augmentation: AugmentationParams = field(default_factory=AugmentationParams)
-    columns:      Columns = field(default_factory=Columns)
-    training:     TrainingParams = field(default_factory=TrainingParams)
-    loss:         LossParams = field(default_factory=LossParams)
-    architecture: ArchitectureParams = field(default_factory=ArchitectureParams)
-    layerwise:    LayerWiseParams = field(default_factory=LayerWiseParams)
-    ema:          EMAParams = field(default_factory=EMAParams)
+    paths:          PathsDetails = field(default_factory=PathsDetails)
+    load:           LoadParams = field(default_factory=LoadParams)
+    split:          SplitParams = field(default_factory=SplitParams)
+    target:         TargetParams = field(default_factory=TargetParams)
+    temporal:       TemporalFeatureParams = field(default_factory=TemporalFeatureParams)
+    augmentation:   AugmentationParams = field(default_factory=AugmentationParams)
+    columns:        Columns = field(default_factory=Columns)
+    training:       TrainingParams = field(default_factory=TrainingParams)
+    loss:           LossParams = field(default_factory=LossParams)
+    architecture:   ArchitectureParams = field(default_factory=ArchitectureParams)
+    layerwise:      LayerWiseParams = field(default_factory=LayerWiseParams)
+    ema:            EMAParams = field(default_factory=EMAParams)
     early_stopping: EarlyStoppingParams = field(default_factory=EarlyStoppingParams)
-    scheduler:    CosineSchedulerParams = field(default_factory=CosineSchedulerParams)
-    overfit:      OverfitParams = field(default_factory=OverfitParams)
-    ablation:     AblationParams = field(default_factory=AblationParams)
+    scheduler:      CosineSchedulerParams = field(default_factory=CosineSchedulerParams)
+    overfit:        OverfitParams = field(default_factory=OverfitParams)
+    ablation:       AblationParams = field(default_factory=AblationParams)
 
 
 config = Config()

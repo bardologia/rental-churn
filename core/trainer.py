@@ -17,22 +17,35 @@ class Loss(nn.Module):
     def __init__(
         self,
         config,
-        logger
+        logger,
+        target_scaler=None,
     ):
         super().__init__()
-        self.logger           = logger
-        self.huber_delta      = config.huber_delta
-        self.quantiles        = torch.tensor(config.quantiles)
-        self.quantile_weight  = config.quantile_weight
-        self.threshold_weight = config.threshold_weight
-        self.thresholds       = config.thresholds
+        self.logger                    = logger
+        self.target_scaler             = target_scaler
+        self.huber_delta_raw           = float(config.loss.huber_delta)
+        self.threshold_weight          = config.loss.threshold_weight
+        self.thresholds_raw            = [float(value) for value in config.loss.thresholds]
+        self.threshold_proximity_raw   = float(config.loss.threshold_proximity_width)
+        
+        self.huber_delta               = self.norm(self.huber_delta_raw)
+        self.thresholds                = [self.norm(value) for value in self.thresholds_raw]
+        self.threshold_proximity_width = max(self.norm(self.threshold_proximity_raw), 1e-6)
 
         self.logger.section(f"[Loss Function]")
-        self.logger.subsection(f"Huber Loss             : Delta = {self.huber_delta}")
-        self.logger.subsection(f"Quantile Loss          : Quantiles = {self.quantiles.tolist()}, Weight = {self.quantile_weight}")
-        self.logger.subsection(f"Threshold-Focused Loss : Thresholds = {self.thresholds}, Weight = {self.threshold_weight}\n")
+        self.logger.subsection(f"Huber Loss             : Delta(raw)      = {self.huber_delta_raw}, Delta(normed) = {self.huber_delta:.6f}")
+        self.logger.subsection(f"Threshold-Focused Loss : Thresholds(raw) = {self.thresholds_raw}, Thresholds(normed) = {[round(value, 6) for value in self.thresholds]}, Weight = {self.threshold_weight}")
+        self.logger.subsection(f"Threshold Proximity    : Width(raw)      = {self.threshold_proximity_raw}, Width(normed) = {self.threshold_proximity_width:.6f}\n")
 
-        
+    def norm(self, value: float) -> float:
+        if self.target_scaler is None:
+            return float(value)
+
+        value_arr = np.array([[max(float(value), 0.0)]], dtype=np.float64)
+        value_log = np.log1p(value_arr)
+        value_normed = self.target_scaler.transform(value_log)
+        return float(value_normed.reshape(-1)[0])
+  
     def huber_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         diff      = preds - targets
         abs_diff  = torch.abs(diff)
@@ -42,19 +55,12 @@ class Loss(nn.Module):
         
         return loss
     
-    def quantile_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        quantiles = self.quantiles.to(preds.device)
-        errors    = targets.unsqueeze(-1) - preds.unsqueeze(-1)
-        loss      = torch.max(quantiles * errors, (quantiles - 1) * errors)
-        
-        return loss.mean(dim=-1)
-    
-    def threshold_focused_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def threshold_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         loss = torch.zeros_like(preds)
         for threshold in self.thresholds:
             pred_above          = (preds > threshold).float()
             target_above        = (targets > threshold).float()
-            threshold_proximity = torch.exp(-torch.abs(targets - threshold) / 5.0)
+            threshold_proximity = torch.exp(-torch.abs(targets - threshold) / self.threshold_proximity_width)
             misclassification   = torch.abs(pred_above - target_above)
             loss               += misclassification * threshold_proximity * torch.abs(preds - targets)
         
@@ -62,19 +68,16 @@ class Loss(nn.Module):
     
     def forward(self, preds: torch.Tensor, targets: torch.Tensor):
         huber     = self.huber_loss(preds, targets)
-        quantile  = self.quantile_loss(preds, targets)
-        threshold = self.threshold_focused_loss(preds, targets)
+        threshold = self.threshold_loss(preds, targets)
         
         total_loss = (
             huber + 
-            self.quantile_weight * quantile + 
             self.threshold_weight * threshold
         )
         
         components = {
             'total'     : total_loss.detach().mean().item(),
             'huber'     : huber.detach().mean().item(),
-            'quantile'  : quantile.detach().mean().item(),
             'threshold' : threshold.detach().mean().item()
         }
         
@@ -91,7 +94,8 @@ class Warmup:
         self.logger              = logger
         self.tracker             = tracker
 
-        self.logger.section(f"\n [Warmup]")
+        self.logger.info("\n")
+        self.logger.section(f"[Warmup]")
         self.logger.subsection(f" Enabled      : {self.enabled}")
         self.logger.subsection(f" Warmup Steps : {self.warmup_steps}")
         self.logger.subsection(f" Start Factor : {self.warmup_start_factor} \n")
@@ -444,10 +448,10 @@ class Trainer:
         self.logger.subsection(f"[GPU] Memory Total: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
         self.logger.subsection(f"[GPU] CUDA Version: {torch.version.cuda} \n")
         
-        self.device = config.training.device
+        self.device = torch.device(config.training.device)
         self.model  = model.to(self.device)
 
-        self.shape_logger   = ShapeLogger(model = self.model, logger = self.logger).attach()
+        self.shape_logger   = ShapeLogger(model = self.model, logger=self.logger).attach()
     
         self.train_loader      = train_loader
         self.validation_loader = validation_loader
@@ -460,7 +464,7 @@ class Trainer:
         self.scheduler      = Scheduler(optimizer=self.optimizer, warmup=self.warmup, config=self.config, logger=self.logger, tracker=self.tracker)
         self.ema            = EMA(self.model, config=self.config, logger=self.logger, tracker=self.tracker)
         self.early_stopping = EarlyStopping(self.config, self.logger)
-        self.criterion      = Loss(self.config, self.logger)
+        self.criterion      = Loss(self.config, self.logger, target_scaler=self.target_scaler)
         self.scaler         = GradScaler() if self.config.training.mixed_precision else None
         
         self.metrics        = Metrics(tracker=self.tracker)
@@ -486,10 +490,9 @@ class Trainer:
             preds = self.model(categorical_features, continuous_features, lengths)
             target_values = targets.view(-1)
             batch_loss, loss_components = self.loss(preds, target_values)
-            batch_loss_for_backward = batch_loss / self.grad_accum_steps
             self.shape_logger.detach()
 
-        return preds, batch_loss_for_backward, batch_loss, loss_components
+        return preds, batch_loss, loss_components
                 
     def loss(self, preds: torch.Tensor, targets: torch.Tensor):
         sample_losses, components = self.criterion(preds, targets)
@@ -503,9 +506,15 @@ class Trainer:
         weighted_losses = sample_losses * weights
         batch_loss = weighted_losses.mean()
 
+        components = dict(components)
+        components['total'] = batch_loss.detach().item()
+        components['huber'] = (self.criterion.huber_loss(preds, targets).view(-1) * weights).mean().detach().item()
+        components['threshold'] = (self.criterion.threshold_weight * self.criterion.threshold_loss(preds, targets).view(-1) * weights).mean().detach().item()
+
         return batch_loss, components
 
-    def backward(self, loss, step: bool):
+    def backward(self, loss, step: bool, accum_steps_in_window: int):
+        loss = loss / max(accum_steps_in_window, 1)
         if self.scaler:
             self.scaler.scale(loss).backward()
             if step:
@@ -531,16 +540,11 @@ class Trainer:
                 self.ema.update(self.model, self.step)
                 self.tracker.log_optimizer(self.optimizer, step=self.step)
 
-    def train_epoch(self):
+    def train_epoch(self, data_loader):
         self.model.train()
         epoch_loss_sum = torch.tensor(0.0, device=self.device)
-        
-        if self.config.overfit.overfit_single_batch:
-            single_batch = next(iter(self.train_loader))
-            batch_iterable = itertools.repeat(single_batch, len(self.train_loader))
-            loop = tqdm(batch_iterable, desc=f"Train Epoch {self.epoch} (Overfit Single Batch)", total=len(self.train_loader))
-        else:
-            loop = tqdm(self.train_loader, desc=f"Train Epoch {self.epoch}")
+
+        loop = tqdm(data_loader, desc=f"Train Epoch {self.epoch}", total=len(data_loader))
 
         self.optimizer.zero_grad(set_to_none=True)
         for batch_idx, batch in enumerate(loop):
@@ -551,16 +555,22 @@ class Trainer:
             targets              = targets.to(self.device, non_blocking=True)
             lengths              = lengths.to(self.device, non_blocking=True)
 
-            _, batch_loss_for_backward, batch_loss, _ = self.forward(
+            _, batch_loss, _ = self.forward(
                 categorical_features,
                 continuous_features,
                 lengths,
                 targets,
             )
 
-            is_last = (batch_idx + 1) == len(self.train_loader)
+            accum_steps_in_window = self.grad_accum_steps
+            is_last = (batch_idx + 1) == len(data_loader)
+            remainder = len(data_loader) % self.grad_accum_steps
+            
+            if is_last and remainder != 0:
+                accum_steps_in_window = remainder
+            
             should_step = ((batch_idx + 1) % self.grad_accum_steps == 0) or is_last
-            self.backward(batch_loss_for_backward, step=should_step)
+            self.backward(batch_loss, step=should_step, accum_steps_in_window=accum_steps_in_window)
             epoch_loss_sum += batch_loss.detach()
             self.batch += 1
             
@@ -580,7 +590,7 @@ class Trainer:
             targets              = targets.to(self.device, non_blocking=True)
             lengths              = lengths.to(self.device, non_blocking=True)
             
-            preds, _, batch_loss, loss_components = self.forward(
+            preds, batch_loss, loss_components = self.forward(
                 categorical_features,
                 continuous_features,
                 lengths,
@@ -612,9 +622,23 @@ class Trainer:
     def fit(self):
         self.early_stopping.reset()
 
+        train_loader = self.train_loader
+        train_loader_len = len(train_loader)
+        if self.config.overfit.overfit_single_batch:
+            single_batch = next(iter(train_loader))
+            categorical_features, continuous_features, targets, lengths = single_batch
+            k = min(self.config.overfit.overfit_sequence_count, categorical_features.size(0))
+            single_batch = (categorical_features[:k], continuous_features[:k], targets[:k], lengths[:k])
+            data_loader = [single_batch] * train_loader_len
+            eval_train_loader = [single_batch]
+            self.logger.warning(f"Overfitting mode enabled: training on a single batch ({k} sequences) repeated {train_loader_len} times.")
+        else:
+            data_loader = train_loader
+            eval_train_loader = train_loader
+
         for epoch in range(1, self.config.training.epochs + 1):
-            self.train_epoch()
-            training_metrics   = self.evaluate(self.train_loader,      phase="Training")
+            self.train_epoch(data_loader)
+            training_metrics   = self.evaluate(eval_train_loader,      phase="Training")
             validation_metrics = self.evaluate(self.validation_loader, phase="Validation")
             
             self.tracker.log_scalar("train/average_loss",      training_metrics['loss'],   step=self.epoch)
