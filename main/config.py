@@ -21,8 +21,8 @@ class SplitParams:
 class LoadParams:
     use_cache            : bool  = True
     sample_fraction      : float = 1.0
-    load_sample_fraction : float = 0.01
-    user_sample_count    : int   = 60
+    load_sample_fraction : float = 1.0
+    user_sample_count    : int   = None
     random_state         : int   = 42
 
 
@@ -57,14 +57,26 @@ class LayerWiseParams:
     sequence_encoder_lr : float = 3e-4
     cross_attention_lr  : float = 3e-4
     head_lr             : float = 1e-3
+    
+    tokenizer_name        : str = "tokenizer"
+    invoice_encoder_name  : str = "invoice_encoder"
+    sequence_encoder_name : str = "sequence_encoder"
+    cross_attention_name  : str = "temporal_attention"
+    head_name             : str = "head_days"
+    
+    tokenizer_weight_decay        : Optional[float] = None
+    invoice_encoder_weight_decay  : Optional[float] = None
+    sequence_encoder_weight_decay : Optional[float] = None
+    cross_attention_weight_decay  : Optional[float] = None
+    head_weight_decay             : Optional[float] = None
 
 
 @dataclass
 class TrainingParams:
     batch_size         : int   = 256
-    epochs             : int   = 5
+    epochs             : int   = 35
     warmup_enabled     : bool  = True
-    warmup_steps       : int   = 1000
+    warmup_steps       : int   = 100
     warmup_start_factor: float = 0.1
     grad_accum_steps   : int   = 1
     dropout            : float = 0.10
@@ -73,7 +85,7 @@ class TrainingParams:
     high_target_weight : float = 0.3
     mixed_precision    : bool  = True
     max_grad_norm      : float = 1.0
-    num_workers        : int   = 8
+    num_workers        : int   = 4
     pin_memory         : bool  = True
     persistent_workers : bool  = True
     prefetch_factor    : int   = 4
@@ -119,6 +131,13 @@ class EMAParams:
     ema_decay              : float = 0.9999
     ema_warmup_steps       : int   = 2000
     ema_warmup_denominator : int   = 10
+
+
+@dataclass
+class EarlyStoppingParams:
+    enabled  : bool  = True
+    patience : int   = 6
+    mode     : str   = "min"
 
 
 @dataclass
@@ -211,7 +230,7 @@ class Columns:
     category_col         : str = 'categoria'
     category_filter      : str = 'aluguel'
     billed_value_col     : str = 'valor_brl'
-    paid_value_col      : str = 'valor_pago_brl'
+    paid_value_col       : str = 'valor_pago_brl'
     security_deposit_col : str = 'valor_caucao_brl'
     
     sort_cols: List[str] = field(default_factory=lambda: ['usuarioId', 'vencimentoData', 'ordem_parcela'])
@@ -238,6 +257,7 @@ class Config:
     architecture: ArchitectureParams = field(default_factory=ArchitectureParams)
     layerwise:    LayerWiseParams = field(default_factory=LayerWiseParams)
     ema:          EMAParams = field(default_factory=EMAParams)
+    early_stopping: EarlyStoppingParams = field(default_factory=EarlyStoppingParams)
     scheduler:    CosineSchedulerParams = field(default_factory=CosineSchedulerParams)
     overfit:      OverfitParams = field(default_factory=OverfitParams)
     ablation:     AblationParams = field(default_factory=AblationParams)

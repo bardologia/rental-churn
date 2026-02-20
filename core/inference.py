@@ -18,28 +18,36 @@ class InferenceEngine:
         device: torch.device = None,
         categorical_maps: dict = None,
     ):
-        self.model = model
-        self.target_scaler = target_scaler
-        self.feature_scalers = feature_scalers or {}
-        self.config = config
-        self.logger = logger or Logger(log_dir=None, name="inference", level="INFO")
-        self.device = device 
-        self.categorical_maps = categorical_maps
-        self.logger.info(f"[Inference] Using device: {self.device}")
+        self.model            = model
+        self.target_scaler    = target_scaler
+        self.feature_scalers  = feature_scalers or {}
+        self.config           = config
+        self.logger           = logger or Logger(log_dir=None, name="inference", level="INFO")
+        self.device           = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.categorical_maps = categorical_maps or {}
+        
+        self.logger.section("[Inference]")
+        self.logger.subsection(f"Using device: {self.device}")
 
         self.model.to(self.device)
         self.model.eval()
 
         self.categorical_columns = list(self.config.columns.cat_cols)
-        self.continuous_columns = list(self.config.columns.cont_cols)
+        self.continuous_columns  = list(self.config.columns.cont_cols)
 
     def _parse_dates(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        self.logger.section("[Date Parsing]")
+
         date_cols = [col for col in self.config.columns.date_cols if col in dataframe.columns]
         for col in date_cols:
             dataframe[col] = pd.to_datetime(dataframe[col], errors="coerce", utc=True)
+        
+        self.logger.subsection(f"Parsed date columns: {', '.join(date_cols)} \n")
         return dataframe
 
     def _apply_feature_engineering(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        self.logger.section("[Feature Engineering]")
+        
         engineer = FeatureEngineer(self.config, self.logger)
         dataframe = engineer.create_temporal_features(dataframe)
         dataframe = engineer.create_history_features(dataframe)
@@ -58,32 +66,28 @@ class InferenceEngine:
         dataframe[delay_known_col]   = known_mask.astype(int)
         dataframe[target_col]        = dataframe[delay_clipped_col]
 
+        self.logger.subsection(f"Created features: {delay_clipped_col}, {delay_known_col}, {target_col} \n")
         return dataframe
 
     def _normalize_continuous(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        self.logger.section("[Continuous Feature Normalization]")
+        
         no_scale = set(self.config.columns.no_scale_cols)
         for col in self.continuous_columns:
-            if col not in dataframe.columns:
-                dataframe[col] = 0.0
-                continue
-
             dataframe[col] = dataframe[col].replace([np.inf, -np.inf], 0).fillna(0.0)
             if col in no_scale:
                 dataframe[col] = dataframe[col].astype(float)
                 continue
-
+            
             scaler = self.feature_scalers.get(col)
-            if scaler is None:
-                self.logger.warning(f"[Inference] Missing scaler for column '{col}'. Using raw values.")
-                dataframe[col] = dataframe[col].astype(float)
-                continue
-
             dataframe[col] = scaler.transform(dataframe[[col]].astype(float).values)
 
+        self.logger.subsection(f"Normalized continuous columns: {', '.join(self.continuous_columns)} \n")
         return dataframe
 
     def _encode_categorical(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        warned = False
+        self.logger.section("[Categorical Feature Encoding]")   
+        missing_map_cols = []
         for col in self.categorical_columns:
             if col not in dataframe.columns:
                 dataframe[col] = 0
@@ -93,21 +97,29 @@ class InferenceEngine:
                 dataframe[col] = dataframe[col].fillna(0).astype(int)
                 continue
 
-            if col in self.categorical_maps:
-                mapping = self.categorical_maps[col]
+            mapping = self.categorical_maps.get(col)
+            if mapping is not None:
                 dataframe[col] = dataframe[col].map(mapping).fillna(0).astype(int)
                 continue
 
-            if not warned:
-                self.logger.warning("[Inference] No categorical maps provided. Using local factorization.")
-                warned = True
+            missing_map_cols.append(col)
 
             codes, _ = pd.factorize(dataframe[col].astype(str), sort=True)
             dataframe[col] = (codes + 1).astype(int)
 
+        if not self.categorical_maps:
+            self.logger.warning("No categorical maps provided. Using local factorization for non-numeric categorical columns.")
+        elif missing_map_cols:
+            missing_cols = ", ".join(sorted(set(missing_map_cols)))
+            self.logger.warning(f"Missing categorical maps for columns: {missing_cols}. Using local factorization for these columns.")
+
+
+        self.logger.subsection(f"Encoded categorical columns: {', '.join(self.categorical_columns)} \n")
         return dataframe
 
     def _prepare_dataframe(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        self.logger.section("[Data Preparation]")
+        
         dataframe = dataframe.copy()
 
         for col in dataframe.select_dtypes(include=["object"]).columns:
@@ -133,9 +145,12 @@ class InferenceEngine:
         dataframe = self._normalize_continuous(dataframe)
         dataframe = self._encode_categorical(dataframe)
 
+        self.logger.subsection(f"Final dataframe shape after preparation: {dataframe.shape} \n")
         return dataframe
 
     def _build_sequences(self, dataframe: pd.DataFrame) -> tuple:
+        self.logger.section("[Sequence Building]")
+
         group_cols       = self.config.columns.group_cols
         sort_cols        = self.config.columns.sort_cols
         payment_date_col = self.config.columns.payment_date_col
@@ -162,6 +177,7 @@ class InferenceEngine:
             sequences.append(seq_df)
             meta_rows.append(open_row.iloc[0])
 
+        self.logger.subsection(f"Built {len(sequences)} sequences for inference \n")
         return sequences, meta_rows
 
     def _mask_last_step(self, continuous_tensor: torch.Tensor) -> torch.Tensor:
@@ -190,6 +206,7 @@ class InferenceEngine:
         return den
 
     def predict(self, dataframe: pd.DataFrame, batch_size: int = 256) -> pd.DataFrame:
+        self.logger.section("[Prediction]")
         dataframe            = self._prepare_dataframe(dataframe)
         sequences, meta_rows = self._build_sequences(dataframe)
 
@@ -211,15 +228,15 @@ class InferenceEngine:
                 lengths.append(len(seq_df))
 
             categorical_padded = pad_sequence(
-                categorical_list,
-                batch_first=True,
-                padding_value=self.config.architecture.categorical_padding_value,
+                sequences     = categorical_list,
+                batch_first   = True,
+                padding_value = self.config.architecture.categorical_padding_value,
             )
             
             continuous_padded = pad_sequence(
-                continuous_list,
-                batch_first=True,
-                padding_value=self.config.architecture.continuous_padding_value,
+                sequences     = continuous_list,
+                batch_first   = True,
+                padding_value = self.config.architecture.continuous_padding_value,
             )
             
             lengths_tensor = torch.tensor(lengths, dtype=torch.long)
@@ -249,4 +266,5 @@ class InferenceEngine:
                 "sequence_length": int(len(seq)),
             })
 
+        self.logger.subsection(f"Generated predictions for {len(output_rows)} contracts \n")
         return pd.DataFrame(output_rows)

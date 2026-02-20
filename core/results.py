@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
-from sklearn.metrics import mean_absolute_percentage_error, median_absolute_error, roc_curve, auc
+from sklearn.metrics import median_absolute_error
 from scipy.stats import gaussian_kde
 
 

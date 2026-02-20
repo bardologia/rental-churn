@@ -13,31 +13,31 @@ class StochasticDepth(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.training or self.drop_prob == 0:
             return x
+       
         keep_prob = 1 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        mask = x.new_empty(shape).bernoulli_(keep_prob).div_(keep_prob)
+        shape     = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask      = x.new_empty(shape).bernoulli_(keep_prob).div_(keep_prob)
         return x * mask
 
 
 class FourierFeatures(nn.Module):
     def __init__(self, num_features: int, embedding_dimension: int, sigma: float = 1.0):
         super().__init__()
-        self.num_features = num_features
+        self.num_features        = num_features
         self.embedding_dimension = embedding_dimension
         
         self.frequencies = nn.Parameter(torch.randn(num_features, embedding_dimension // 2) * sigma)
-        self.phases = nn.Parameter(torch.zeros(num_features, embedding_dimension // 2))
+        self.phases      = nn.Parameter(torch.zeros(num_features, embedding_dimension // 2))
         
-        self.projection = nn.Linear(embedding_dimension, embedding_dimension)
-        self.gate = nn.Linear(embedding_dimension, embedding_dimension)
+        self.projection  = nn.Linear(embedding_dimension, embedding_dimension)
+        self.gate        = nn.Linear(embedding_dimension, embedding_dimension)
         
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        batch_size = input_tensor.shape[0]
-        input_expanded = input_tensor.unsqueeze(-1)
-        angles = input_expanded * self.frequencies.unsqueeze(0) * 2 * math.pi + self.phases.unsqueeze(0)
+        input_expanded   = input_tensor.unsqueeze(-1)
+        angles           = input_expanded * self.frequencies.unsqueeze(0) * 2 * math.pi + self.phases.unsqueeze(0)
         fourier_features = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
-        projected = self.projection(fourier_features)
-        gated = torch.sigmoid(self.gate(fourier_features))
+        projected        = self.projection(fourier_features)
+        gated            = torch.sigmoid(self.gate(fourier_features))
         return projected * gated
 
 
@@ -60,10 +60,10 @@ class GRN(nn.Module):
         
         self.context_dimension = context_dimension
         
-        self.gate_layer = nn.Linear(output_dimension, output_dimension)
+        self.gate_layer      = nn.Linear(output_dimension, output_dimension)
         self.skip_connection = nn.Linear(input_dimension, output_dimension) if input_dimension != output_dimension else nn.Identity()
-        self.layer_norm = nn.LayerNorm(output_dimension)
-        self.dropout_layer = nn.Dropout(dropout)
+        self.layer_norm      = nn.LayerNorm(output_dimension)
+        self.dropout_layer   = nn.Dropout(dropout)
         
     def forward(self, input_tensor: torch.Tensor, context: Optional[torch.Tensor] = None) -> torch.Tensor:
         hidden = F.elu(self.fully_connected_1(input_tensor))
@@ -71,7 +71,7 @@ class GRN(nn.Module):
         if context is not None and self.context_dimension is not None:
             hidden = hidden + self.context_projection(context)
         
-        hidden = self.dropout_layer(F.elu(self.fully_connected_2(hidden)))
+        hidden      = self.dropout_layer(F.elu(self.fully_connected_2(hidden)))
         gate_values = torch.sigmoid(self.gate_layer(hidden))
         skip_values = self.skip_connection(input_tensor)
         
@@ -81,21 +81,31 @@ class GRN(nn.Module):
 class SwiGLU(nn.Module):
     def __init__(self, input_features: int, hidden_features: int, output_features: int, dropout: float = 0.0):
         super().__init__()
-        self.gate_projection = nn.Linear(input_features, hidden_features, bias=False)
+        self.gate_projection   = nn.Linear(input_features, hidden_features, bias=False)
         self.output_projection = nn.Linear(hidden_features, output_features, bias=False)
-        self.up_projection = nn.Linear(input_features, hidden_features, bias=False)
-        self.dropout_layer = nn.Dropout(dropout)
+        self.up_projection     = nn.Linear(input_features, hidden_features, bias=False)
+        self.dropout_layer     = nn.Dropout(dropout)
         
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        return self.dropout_layer(self.output_projection(F.silu(self.gate_projection(input_tensor)) * self.up_projection(input_tensor)))
+        gate_values    = self.gate_projection(input_tensor)        
+        gate_activated = F.silu(gate_values)                    
+
+        up_values      = self.up_projection(input_tensor)             
+
+        fused     = gate_activated * up_values                      
+        projected = self.output_projection(fused)                
+
+        output = self.dropout_layer(projected)               
+        return output
 
 
 class RoPE(nn.Module):
     def __init__(self, dimension: int, max_sequence_length: int = 512, base: float = 10000.0):
         super().__init__()
-        self.dimension = dimension
+        self.dimension           = dimension
         self.max_sequence_length = max_sequence_length
-        inverse_frequency = 1.0 / (base ** (torch.arange(0, dimension, 2).float() / dimension))
+        inverse_frequency        = 1.0 / (base ** (torch.arange(0, dimension, 2).float() / dimension))
+        
         self.register_buffer('inverse_frequency', inverse_frequency)
         self._build_cache(max_sequence_length)
         
@@ -109,28 +119,26 @@ class RoPE(nn.Module):
     def _rotate_half(self, tensor: torch.Tensor) -> torch.Tensor:
         first_half, second_half = tensor[..., :tensor.shape[-1]//2], tensor[..., tensor.shape[-1]//2:]
         return torch.cat([-second_half, first_half], dim=-1)
-    
-    @torch.jit.unused
-    def _extend_cached_values(self, sequence_length: int, cos_values: torch.Tensor, sin_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        additional_positions = torch.arange(self.max_sequence_length, sequence_length, device=self.inverse_frequency.device).type_as(self.inverse_frequency)
-        additional_frequencies = torch.einsum('i,j->ij', additional_positions, self.inverse_frequency)
-        additional_embeddings = torch.cat([additional_frequencies, additional_frequencies], dim=-1)
-        additional_cos = additional_embeddings.cos().unsqueeze(0).unsqueeze(0)
-        additional_sin = additional_embeddings.sin().unsqueeze(0).unsqueeze(0)
-        cos_values = torch.cat([cos_values, additional_cos], dim=2)
-        sin_values = torch.cat([sin_values, additional_sin], dim=2)
-        return cos_values, sin_values
-        
+            
     def forward(self, query: torch.Tensor, key: torch.Tensor, sequence_length: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(sequence_length, torch.Tensor):
+            sequence_length = int(sequence_length.item())
+        
         actual_length = min(sequence_length, self.max_sequence_length)
-        cos_values = self.cos_cached[:, :, :actual_length, :].to(query.dtype)
-        sin_values = self.sin_cached[:, :, :actual_length, :].to(query.dtype)
+        cos_values    = self.cos_cached[:, :, :actual_length, :].to(query.dtype)
+        sin_values    = self.sin_cached[:, :, :actual_length, :].to(query.dtype)
         
         if sequence_length > self.max_sequence_length:
-            cos_values, sin_values = self._extend_cached_values(sequence_length, cos_values, sin_values)
+            additional_positions   = torch.arange(self.max_sequence_length, sequence_length, device=self.inverse_frequency.device).type_as(self.inverse_frequency)
+            additional_frequencies = torch.einsum('i,j->ij', additional_positions, self.inverse_frequency)
+            additional_embeddings  = torch.cat([additional_frequencies, additional_frequencies], dim=-1)
+            additional_cos         = additional_embeddings.cos().unsqueeze(0).unsqueeze(0)
+            additional_sin         = additional_embeddings.sin().unsqueeze(0).unsqueeze(0)
+            cos_values             = torch.cat([cos_values, additional_cos], dim=2)
+            sin_values             = torch.cat([sin_values, additional_sin], dim=2)
         
         query_embedded = (query * cos_values) + (self._rotate_half(query) * sin_values)
-        key_embedded = (key * cos_values) + (self._rotate_half(key) * sin_values)
+        key_embedded   = (key * cos_values) + (self._rotate_half(key) * sin_values)
         return query_embedded, key_embedded
 
 
@@ -139,7 +147,7 @@ class PredictionHead(nn.Module):
         super().__init__()
         self.gated_residual_network_1 = GRN(input_dimension, hidden_dimension * 2, hidden_dimension, dropout)
         self.gated_residual_network_2 = GRN(hidden_dimension, hidden_dimension, hidden_dimension // 2, dropout)
-        self.output_layer = nn.Linear(hidden_dimension // 2, num_outputs)
+        self.output_layer             = nn.Linear(hidden_dimension // 2, num_outputs)
         
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         input_tensor = self.gated_residual_network_1(input_tensor)
@@ -159,15 +167,15 @@ class FeatureTokenizer(nn.Module):
         super().__init__()
 
         self.categorical_embeddings = nn.ModuleList([nn.Embedding(cardinality + 1, token_dimension, padding_idx=0) for cardinality in cardinalities])
-        self.embedding_dropout = nn.Dropout(embedding_dropout)
-        self.token_dimension = token_dimension
+        self.embedding_dropout      = nn.Dropout(embedding_dropout)
+        self.token_dimension        = token_dimension
 
-        self.continuous_embedding = FourierFeatures(num_continuous, token_dimension, sigma=periodic_sigma)
+        self.continuous_embedding   = FourierFeatures(num_continuous, token_dimension, sigma=periodic_sigma)
             
     def forward(self, categorical_features: torch.Tensor, continuous_features: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = categorical_features.shape
-        categorical_flat = categorical_features.view(batch_size * sequence_length, -1)
-        continuous_flat = continuous_features.view(batch_size * sequence_length, -1)
+        categorical_flat               = categorical_features.view(batch_size * sequence_length, -1)
+        continuous_flat                = continuous_features.view(batch_size * sequence_length, -1)
         
         categorical_tokens = []
         for index, embedding in enumerate(self.categorical_embeddings):
@@ -297,8 +305,8 @@ class SequenceEncoder(nn.Module):
         super().__init__()
         
         self.model_dimension = model_dimension
-        self.num_heads = num_heads
-        self.head_dimension = model_dimension // num_heads
+        self.num_heads       = num_heads
+        self.head_dimension  = model_dimension // num_heads
         
         self.rotary_positional_embedding = RoPE(self.head_dimension, max_sequence_length)
         
@@ -306,8 +314,14 @@ class SequenceEncoder(nn.Module):
         for layer_index in range(num_layers):
             current_drop_path_rate = drop_path_rate * layer_index / max(num_layers - 1, 1)
             self.layers.append(
-                TransformerBlock(model_dimension, num_heads, dropout, current_drop_path_rate, 
-                                 rotary_positional_embedding=self.rotary_positional_embedding, is_causal=True)
+                TransformerBlock(
+                    model_dimension, 
+                    num_heads, 
+                    dropout, 
+                    current_drop_path_rate,              
+                    rotary_positional_embedding=self.rotary_positional_embedding, 
+                    is_causal=True
+                )
             )
         
         self.layer_norm = nn.LayerNorm(model_dimension)
@@ -339,9 +353,9 @@ class CrossAttention(nn.Module):
     def __init__(self, model_dimension: int, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
         
-        self.attention = nn.MultiheadAttention(model_dimension, num_heads, dropout=dropout, batch_first=True)
+        self.attention              = nn.MultiheadAttention(model_dimension, num_heads, dropout=dropout, batch_first=True)
         self.gated_residual_network = GRN(model_dimension, model_dimension * 2, model_dimension, dropout)
-        self.dropout_layer = nn.Dropout(dropout)
+        self.dropout_layer          = nn.Dropout(dropout)
         
     def forward(self, current: torch.Tensor, history: torch.Tensor, mask: Optional[torch.Tensor] = None):
         
@@ -364,12 +378,12 @@ class Model(nn.Module):
         super().__init__()
         self.config = config
         self.embedding_dimensions = embedding_dimensions
-        self.target_scaler = target_scaler
-        self.feature_scaler = feature_scaler
+        self.target_scaler        = target_scaler
+        self.feature_scaler       = feature_scaler
         
         self.hidden_dimension = self.config.architecture.hidden_dim
-        self.num_categorical = len(self.embedding_dimensions)
-        self.num_continuous = num_continuous
+        self.num_categorical  = len(self.embedding_dimensions)
+        self.num_continuous   = num_continuous
 
         self.tokenizer = FeatureTokenizer(
             self.embedding_dimensions,
@@ -399,7 +413,7 @@ class Model(nn.Module):
         self.temporal_attention = CrossAttention(self.hidden_dimension, num_heads=self.config.architecture.num_attention_heads, dropout=self.config.training.dropout)
 
         head_input_dimension = self.hidden_dimension * 3
-        self.head_days = PredictionHead(head_input_dimension, self.hidden_dimension, dropout=self.config.training.dropout, num_outputs=1)
+        self.head_days       = PredictionHead(head_input_dimension, self.hidden_dimension, dropout=self.config.training.dropout, num_outputs=1)
         
     def forward(
         self, 
