@@ -2,7 +2,6 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.metrics import median_absolute_error
 import numpy as np
@@ -11,6 +10,7 @@ import copy
 from tqdm.auto import tqdm
 from .logger import ShapeLogger
 from pathlib import Path
+from torch.amp import GradScaler
 
 
 class Loss(nn.Module):
@@ -28,9 +28,9 @@ class Loss(nn.Module):
         self.thresholds_raw            = [float(value) for value in config.loss.thresholds]
         self.threshold_proximity_raw   = float(config.loss.threshold_proximity_width)
         
-        self.huber_delta               = self.norm(self.huber_delta_raw)
+        self.huber_delta               = self.norm(self.huber_delta_raw) - self.norm(0.0)
         self.thresholds                = [self.norm(value) for value in self.thresholds_raw]
-        self.threshold_proximity_width = max(self.norm(self.threshold_proximity_raw), 1e-6)
+        self.threshold_proximity_width = max(self.norm(self.threshold_proximity_raw) - self.norm(0.0), 1e-6)
 
         self.logger.section(f"[Loss Function]")
         self.logger.subsection(f"Huber Loss             : Delta(raw)      = {self.huber_delta_raw}, Delta(normed) = {self.huber_delta:.6f}")
@@ -41,11 +41,12 @@ class Loss(nn.Module):
         if self.target_scaler is None:
             return float(value)
 
-        value_arr = np.array([[max(float(value), 0.0)]], dtype=np.float64)
-        value_log = np.log1p(value_arr)
+        value_arr    = np.array([[max(float(value), 0.0)]], dtype=np.float64)
+        value_log    = np.log1p(value_arr)
         value_normed = self.target_scaler.transform(value_log)
+        
         return float(value_normed.reshape(-1)[0])
-  
+
     def huber_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         diff      = preds - targets
         abs_diff  = torch.abs(diff)
@@ -69,19 +70,8 @@ class Loss(nn.Module):
     def forward(self, preds: torch.Tensor, targets: torch.Tensor):
         huber     = self.huber_loss(preds, targets)
         threshold = self.threshold_loss(preds, targets)
-        
-        total_loss = (
-            huber + 
-            self.threshold_weight * threshold
-        )
-        
-        components = {
-            'total'     : total_loss.detach().mean().item(),
-            'huber'     : huber.detach().mean().item(),
-            'threshold' : threshold.detach().mean().item()
-        }
-        
-        return total_loss, components
+        total_loss = huber + self.threshold_weight * threshold
+        return total_loss, huber, threshold
 
 
 class Warmup:
@@ -120,17 +110,17 @@ class Warmup:
             progress = self.current_step / self.warmup_steps
             factor   = self.warmup_start_factor + (1.0 - self.warmup_start_factor) * progress
             self._apply_warmup_factor(factor)
+            if self.tracker:
+                self.tracker.log_scalar("warmup/factor", factor, step=self.current_step)
         elif not self.warmup_finished:
             factor = 1.0
             self._apply_warmup_factor(factor)
             
-            if self.warmup_finished == False:
-                self.logger.section(f"[Warmup]")
-                self.logger.subsection(f"Warmup finished at step {self.current_step}. Learning rates set to base values \n")
-    
+            self.logger.section(f"[Warmup]")
+            self.logger.subsection(f"Warmup finished at step {self.current_step}. Learning rates set to base values \n")
             self.warmup_finished = True
-        if self.tracker:
-            self.tracker.log_scalar("warmup/factor", factor, step=self.current_step)
+            if self.tracker:
+                self.tracker.log_scalar("warmup/factor", factor, step=self.current_step)
     
     def is_finished(self) -> bool:
         return self.warmup_finished or not self.enabled or self.warmup_steps <= 0
@@ -267,7 +257,7 @@ class Metrics:
         error_bin_20_25    = float(np.mean((abs_err > 20) & (abs_err <= 25)) * 100)
         error_bin_above_25 = float(np.mean(abs_err > 25) * 100)
 
-        def mean_target_range(low, high=None):
+        def mean_target_range(low, high):
             mask = (den_targets > low) & (den_targets <= high)
             vals = abs_err[mask]
             return float(np.mean(vals)) if len(vals) > 0 else float('nan')
@@ -312,7 +302,7 @@ class EarlyStopping:
         self.reset()
 
         self.logger.section(f"[Early Stopping]")
-        self.logger.subsection(f"Enabled  : {self.enabled}")
+        self.logger.subsection(f"Enabled   : {self.enabled}")
         self.logger.subsection(f"Patience  : {self.patience}")
         self.logger.subsection(f"Mode      : {self.mode}\n")
 
@@ -421,7 +411,6 @@ class Checkpoint:
             "model_state_dict"     : trainer.model.state_dict(),
             "optimizer_state_dict" : trainer.optimizer.state_dict(),
             "scheduler_state_dict" : trainer.scheduler.state_dict(),
-            "scaler_state_dict"    : trainer.scaler.state_dict() if trainer.scaler else None,
             "ema_state_dict"       : trainer.ema.state_dict(),
             "epoch"                : trainer.epoch,
             "batch"                : trainer.batch,
@@ -465,7 +454,6 @@ class Trainer:
         self.ema            = EMA(self.model, config=self.config, logger=self.logger, tracker=self.tracker)
         self.early_stopping = EarlyStopping(self.config, self.logger)
         self.criterion      = Loss(self.config, self.logger, target_scaler=self.target_scaler)
-        self.scaler         = GradScaler() if self.config.training.mixed_precision else None
         
         self.metrics        = Metrics(tracker=self.tracker)
         self.checkpoint     = Checkpoint(self.logger)
@@ -485,65 +473,96 @@ class Trainer:
         self.batch = 0
         self.step  = 0
 
+        self.use_amp = getattr(self.config.training, 'mixed_precision', False) and self.device.type == 'cuda'
+        self.scaler  = GradScaler('cuda', enabled=self.use_amp)
+
+        self._scaler_mean = torch.tensor(float(target_scaler.mean_[0]),  device=self.device, dtype=torch.float32)
+        self._scaler_std  = torch.tensor(float(target_scaler.scale_[0]), device=self.device, dtype=torch.float32)
+
+        self.logger.section(f"[Mixed Precision (AMP)]")
+        self.logger.subsection(f"Enabled : {self.use_amp}\n")
+
     def forward(self, categorical_features, continuous_features, lengths, targets):
-        with autocast(device_type=self.device.type, enabled=self.config.training.mixed_precision):
+        self._validate_inputs(categorical_features, continuous_features, lengths)
+
+        with torch.autocast(device_type=self.device.type, enabled=self.use_amp):
             preds = self.model(categorical_features, continuous_features, lengths)
+
+            if self.step % 500 == 0 and (torch.isnan(preds).any() or torch.isinf(preds).any()):
+                nan_count = int(torch.isnan(preds).sum())
+                inf_count = int(torch.isinf(preds).sum())
+                self.logger.warning(f"[Forward] NaN/Inf in predictions at step {self.step}: {nan_count} NaN(s), {inf_count} Inf(s)")
+
             target_values = targets.view(-1)
             batch_loss, loss_components = self.loss(preds, target_values)
-            self.shape_logger.detach()
 
+        self.shape_logger.detach()
         return preds, batch_loss, loss_components
                 
     def loss(self, preds: torch.Tensor, targets: torch.Tensor):
-        sample_losses, components = self.criterion(preds, targets)
-        sample_losses = sample_losses.view(-1)
+        sample_losses, huber_losses, threshold_losses = self.criterion(preds, targets)
+        sample_losses    = sample_losses.view(-1)
+        huber_losses     = huber_losses.view(-1)
+        threshold_losses = threshold_losses.view(-1)
 
-        den_targets = np.expm1(self.target_scaler.inverse_transform(targets.detach().cpu().numpy().reshape(-1, 1))).reshape(-1)
-        den_targets = torch.from_numpy(den_targets).to(self.device).float()
-        
-        mean_den    = den_targets.mean().clamp_min(1e-8)
-        weights     = 1.0 + self.high_target_weight * (den_targets / mean_den)
-        weighted_losses = sample_losses * weights
-        batch_loss = weighted_losses.mean()
+        den_targets = torch.expm1(targets * self._scaler_std + self._scaler_mean)
 
-        components = dict(components)
-        components['total'] = batch_loss.detach().item()
-        components['huber'] = (self.criterion.huber_loss(preds, targets).view(-1) * weights).mean().detach().item()
-        components['threshold'] = (self.criterion.threshold_weight * self.criterion.threshold_loss(preds, targets).view(-1) * weights).mean().detach().item()
+        mean_den        = den_targets.mean().clamp_min(1e-8)
+        weights         = 1.0 + self.high_target_weight * (den_targets / mean_den).clamp(max=5.0)
+        batch_loss      = (sample_losses * weights).mean()
+
+        components = {
+            'total'     : batch_loss.detach().item(),
+            'huber'     : (huber_losses * weights).mean().detach().item(),
+            'threshold' : (self.criterion.threshold_weight * threshold_losses * weights).mean().detach().item(),
+        }
 
         return batch_loss, components
 
+    def _validate_inputs(
+        self,
+        categorical_features: torch.Tensor,
+        continuous_features: torch.Tensor,
+        lengths: torch.Tensor,
+    ) -> None:
+        if self.step % 500 != 0:
+            return
+        if torch.isnan(continuous_features).any() or torch.isinf(continuous_features).any():
+            self.logger.warning(f"[Forward] NaN/Inf in continuous_features at step {self.step}")
+        if torch.isnan(categorical_features.float()).any():
+            self.logger.warning(f"[Forward] NaN in categorical_features at step {self.step}")
+        if (lengths == 0).any():
+            self.logger.warning(f"[Forward] Zero-length sequences at step {self.step}: {(lengths == 0).sum().item()} sample(s)")
+
+    def _sanitize_predictions(self, preds: np.ndarray, phase: str):
+        nan_count = int(np.isnan(preds).sum())
+        inf_count = int(np.isinf(preds).sum())
+        if nan_count > 0 or inf_count > 0:
+            raise ValueError(
+                f"[{phase}] Predictions contain {nan_count} NaN(s) and {inf_count} Inf(s) — "
+                f"fix the root cause before proceeding."
+            )
+      
     def backward(self, loss, step: bool, accum_steps_in_window: int):
         loss = loss / max(accum_steps_in_window, 1)
-        if self.scaler:
-            self.scaler.scale(loss).backward()
-            if step:
-                self.warmup.step()
-                self.scaler.unscale_(self.optimizer)
-                self.tracker.log_gradients(self.model, step=self.step + 1, max_grad_norm=self.config.training.max_grad_norm)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.optimizer.zero_grad(set_to_none=True)
-                self.step += 1
-                self.ema.update(self.model, self.step)
-                self.tracker.log_optimizer(self.optimizer, step=self.step)
-        else:
-            loss.backward()
-            if step:
-                self.warmup.step()
-                self.tracker.log_gradients(self.model, step=self.step + 1, max_grad_norm=self.config.training.max_grad_norm)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none=True)
-                self.step += 1
-                self.ema.update(self.model, self.step)
-                self.tracker.log_optimizer(self.optimizer, step=self.step)
+        self.scaler.scale(loss).backward()
+        if step:
+            self.scaler.unscale_(self.optimizer)
+            self.warmup.step()
+            self.tracker.log_gradients(self.model, step=self.step + 1, max_grad_norm=self.config.training.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.step += 1
+            self.ema.update(self.model, self.step)
+            self.tracker.log_optimizer(self.optimizer, step=self.step)
 
     def train_epoch(self, data_loader):
         self.model.train()
-        epoch_loss_sum = torch.tensor(0.0, device=self.device)
-
+        if hasattr(self.train_loader, 'dataset'):
+            self.train_loader.dataset.training_mode = True
+        
         loop = tqdm(data_loader, desc=f"Train Epoch {self.epoch}", total=len(data_loader))
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -555,24 +574,26 @@ class Trainer:
             targets              = targets.to(self.device, non_blocking=True)
             lengths              = lengths.to(self.device, non_blocking=True)
 
-            _, batch_loss, _ = self.forward(
+            _, batch_loss, loss_components = self.forward(
                 categorical_features,
                 continuous_features,
                 lengths,
                 targets,
             )
+            self.tracker.log_dict("train/loss_components", loss_components, step=self.step)
 
-            accum_steps_in_window = self.grad_accum_steps
             is_last = (batch_idx + 1) == len(data_loader)
-            remainder = len(data_loader) % self.grad_accum_steps
-            
-            if is_last and remainder != 0:
-                accum_steps_in_window = remainder
-            
+
+            window_start          = (batch_idx // self.grad_accum_steps) * self.grad_accum_steps
+            window_end            = min(window_start + self.grad_accum_steps, len(data_loader))
+            accum_steps_in_window = window_end - window_start
+
             should_step = ((batch_idx + 1) % self.grad_accum_steps == 0) or is_last
             self.backward(batch_loss, step=should_step, accum_steps_in_window=accum_steps_in_window)
-            epoch_loss_sum += batch_loss.detach()
             self.batch += 1
+
+        if hasattr(self.train_loader, 'dataset'):
+            self.train_loader.dataset.training_mode = False
             
     @torch.no_grad()
     def evaluate(self, loader, phase="Validation"):
@@ -584,6 +605,7 @@ class Trainer:
         eval_loss_sum = torch.tensor(0.0, device=self.device)
         
         num_batches = 0
+        accumulated_components = {}
         for categorical_features, continuous_features, targets, lengths in loader:
             categorical_features = categorical_features.to(self.device, non_blocking=True)
             continuous_features  = continuous_features.to(self.device, non_blocking=True)
@@ -596,19 +618,26 @@ class Trainer:
                 lengths,
                 targets,
             )
-            eval_loss_sum += batch_loss.detach()
+            eval_loss_sum    += batch_loss.detach()
+
+            for key, val in loss_components.items():
+                accumulated_components[key] = accumulated_components.get(key, 0.0) + val
             
             num_batches += 1
             all_preds.append(preds.cpu())
             all_targets.append(targets.cpu())
        
         average_loss = (eval_loss_sum / max(num_batches, 1)).item()
+        avg_components = {k: v / max(num_batches, 1) for k, v in accumulated_components.items()}
+        self.tracker.log_dict(f"{phase}/loss_components", avg_components, step=self.epoch)
 
         all_preds_tensor   = torch.cat(all_preds, dim=0).numpy()
         all_targets_tensor = torch.cat(all_targets, dim=0).numpy()
         
         den_targets = np.expm1(self.target_scaler.inverse_transform(all_targets_tensor.reshape(-1, 1)))
         den_preds   = np.expm1(self.target_scaler.inverse_transform(all_preds_tensor.reshape(-1, 1)))
+
+        self._sanitize_predictions(den_preds, phase)
 
         den_preds   = np.clip(den_preds, 0, None)
         den_targets = np.clip(den_targets, 0, None)

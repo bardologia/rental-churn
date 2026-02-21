@@ -5,7 +5,6 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import GroupShuffleSplit
-import platform
 
 
 class Augmentation:
@@ -41,7 +40,8 @@ class Augmentation:
         categorical_augmented[cutout_indices] = 0
         continuous_augmented[cutout_indices]  = 0.0
         if excluded_cont_indices:
-            continuous_augmented[cutout_indices][:, excluded_cont_indices] = continuous_features[cutout_indices][:, excluded_cont_indices]
+            for j in excluded_cont_indices:
+                continuous_augmented[cutout_indices, j] = continuous_features[cutout_indices, j]
 
         return categorical_augmented, continuous_augmented
 
@@ -160,6 +160,8 @@ class SequentialDataset(Dataset):
         self.last_known_idx         = last_known_idx
         self.protected_cont_indices = protected_cont_indices or []
 
+        self.training_mode = False
+
         self.logger.section("[Data Augmentation]")
         self.logger.subsection(f"Status      : {'Enabled' if self.augment else 'Disabled'}")
         self.logger.subsection(f"Probability : {self.augment_probability:.1%}")
@@ -221,10 +223,6 @@ class SequentialDataset(Dataset):
         length = categorical_features.shape[0]
         return categorical_features, continuous_features, target, length
     
-    @property
-    def training_mode(self):
-        return self.augment
-
 
 class DatasetLoader:
     def __init__(
@@ -301,6 +299,13 @@ class DatasetLoader:
         self.logger.section("[Categorical Encoding]")
         
         for column in self.categorical_columns:
+            nan_count = dataframe[column].isna().sum()
+            if nan_count > 0:
+                mode_val = dataframe[column].mode(dropna=True)
+                fill_val = mode_val.iloc[0] if len(mode_val) > 0 else "unknown"
+                self.logger.subsection(f"Column {column:<25} | WARNING: {nan_count} NaN(s) — filling with mode ({fill_val!r})")
+                dataframe[column] = dataframe[column].fillna(fill_val)
+
             dataframe[column] = dataframe[column].astype(str)
 
         self.embedding_dimensions = []
@@ -392,7 +397,21 @@ class DatasetLoader:
             
             mean_before = train_dataframe[col].mean()
             std_before  = train_dataframe[col].std()
-        
+
+            if std_before == 0.0 or np.isnan(std_before):
+                self.logger.subsection(f"Feature {col:<25} | SKIPPED (std={std_before}) — constant or all-NaN column, filling with 0.0")
+                train_dataframe[col]      = 0.0
+                validation_dataframe[col] = 0.0
+                test_dataframe[col]       = 0.0
+                continue
+
+            nan_count = train_dataframe[col].isna().sum()
+            if nan_count > 0:
+                self.logger.subsection(f"Feature {col:<25} | WARNING: {nan_count} NaN(s) in training data — filling with column mean ({mean_before:.4f})")
+                train_dataframe[col]      = train_dataframe[col].fillna(mean_before)
+                validation_dataframe[col] = validation_dataframe[col].fillna(mean_before)
+                test_dataframe[col]       = test_dataframe[col].fillna(mean_before)
+
             scaler = StandardScaler()
             train_values = train_dataframe[[col]].values
             scaler.fit(train_values)
@@ -437,7 +456,8 @@ class DatasetLoader:
     def create_expanding_indices(self, dataframe, group_column):
         indices         = []
         dataframe_reset = dataframe.reset_index(drop=True)
-        group_offsets   = dataframe_reset.groupby(group_column).indices
+        col             = group_column[0] if isinstance(group_column, list) else group_column
+        group_offsets   = dataframe_reset.groupby(col).indices
 
         min_start = self.config.architecture.min_seq_len - 1
 
@@ -632,12 +652,11 @@ class DatasetLoader:
     def create_dataloaders(self, train_dataset, validation_dataset, test_dataset):
         self.logger.section("[Dataloaders]")
 
-        is_windows     = platform.system() == 'Windows'
-        num_workers    = 0 if is_windows else self.config.training.num_workers
-        use_persistent = num_workers > 0
-        
-        if is_windows and self.config.training.num_workers > 0:
-            self.logger.warning("Windows detected: Setting num_workers=0 to avoid multiprocessing issues")
+        num_workers      = self.config.training.num_workers
+        use_persistent   = num_workers > 0
+        prefetch_factor  = self.config.training.prefetch_factor if num_workers > 0 else None
+
+        self.logger.subsection(f"num_workers={num_workers}, prefetch_factor={prefetch_factor}, pin_memory={self.config.training.pin_memory}")
 
         train_dataloader = DataLoader(
             dataset             = train_dataset,
@@ -646,6 +665,7 @@ class DatasetLoader:
             num_workers         = num_workers,
             pin_memory          = self.config.training.pin_memory,
             persistent_workers  = use_persistent,
+            prefetch_factor     = prefetch_factor,
             collate_fn          = self.collate_sequences
         )
 
@@ -656,6 +676,7 @@ class DatasetLoader:
             num_workers         = num_workers,
             pin_memory          = self.config.training.pin_memory,
             persistent_workers  = use_persistent,
+            prefetch_factor     = prefetch_factor,
             collate_fn          = self.collate_sequences
         )
 
@@ -666,6 +687,7 @@ class DatasetLoader:
             num_workers         = num_workers,
             pin_memory          = self.config.training.pin_memory,
             persistent_workers  = use_persistent,
+            prefetch_factor     = prefetch_factor,
             collate_fn          = self.collate_sequences
         )
 

@@ -21,7 +21,7 @@ class SplitParams:
 class LoadParams:
     use_cache            : bool  = True
     sample_fraction      : float = 1.0
-    load_sample_fraction : float = 1.0
+    load_sample_fraction : float = 0.2
     user_sample_count    : int   = None
     random_state         : int   = 42
 
@@ -73,33 +73,30 @@ class LayerWiseParams:
 
 @dataclass
 class TrainingParams:
-    batch_size         : int   = 256
-    epochs             : int   = 35
+    batch_size         : int   = 128
+    epochs             : int   = 10
     warmup_enabled     : bool  = True
     warmup_steps       : int   = 100
     warmup_start_factor: float = 0.1
-    grad_accum_steps   : int   = 1
+    grad_accum_steps   : int   = 2
     dropout            : float = 0.10
     weight_decay       : float = 2e-4
     patience           : int   = 6
     high_target_weight : float = 0.3
-    mixed_precision    : bool  = True
-    max_grad_norm      : float = 1.0
-    num_workers        : int   = 4
+    max_grad_norm      : float = 3.0
+    num_workers        : int   = 0
     pin_memory         : bool  = True
     persistent_workers : bool  = True
-    prefetch_factor    : int   = 4
+    prefetch_factor    : int   = 2
     device             : str   = "cuda"
+    mixed_precision    : bool  = True
 
 
 @dataclass
 class LossParams:
     huber_delta               : float = 1.0
-    quantile_weight           : float = 0.3
     threshold_weight          : float = 0.2
     threshold_proximity_width : float = 5.0
-    
-    quantiles                 : List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
     thresholds                : List[float] = field(default_factory=lambda: [15.0, 30.0])
 
 
@@ -144,7 +141,7 @@ class EarlyStoppingParams:
 
 @dataclass
 class OverfitParams:
-    overfit_single_batch     : bool  = True
+    overfit_single_batch     : bool  = False
     overfit_sequence_count   : int   = 2
     overfit_epochs           : int   = 100
     overfit_patience         : int   = 100
@@ -156,7 +153,6 @@ class OverfitParams:
     overfit_val_size         : float = 0.3
     overfit_use_ema          : bool  = False
     overfit_use_augmentation : bool  = False
-    overfit_mixed_precision  : bool  = False
 
 
 @dataclass

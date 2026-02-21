@@ -16,7 +16,7 @@ class Preprocessor:
         after     = len(dataframe)
         
         reduction_pct = (before - after) / before * 100 if before > 0 else 0
-        self.logger.subsection(f"[Category Filter] Filtered by '{category_filter}': {reduction_pct:.1f}%) ")
+        self.logger.subsection(f"[Category Filter] Filtered by '{category_filter}': {reduction_pct:.1f}% ")
         return dataframe
 
     def drop_columns(self, dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -159,7 +159,7 @@ class FeatureEngineer:
         
         dataframe['total_paid']      = (dataframe.groupby(user_col)[paid_value_col].transform(lambda s: s.expanding().sum().shift(1)).fillna(0))
         dataframe['total_billed']    = (dataframe.groupby(user_col)[billed_value_col].transform(lambda s: s.expanding().sum()).fillna(0))
-        dataframe['hist_mean_value'] = dataframe.groupby(user_col)[billed_value_col].transform(lambda values: values.expanding().mean().shift(1)).clip(lower=0)
+        dataframe['hist_mean_value'] = dataframe.groupby(user_col)[billed_value_col].transform(lambda values: values.expanding().mean().shift(1)).fillna(0).clip(lower=0)
         dataframe['value_ratio']     = dataframe[billed_value_col] / dataframe['hist_mean_value']
                 
         self.logger.subsection("[Value Features] Extracted 5 features ")

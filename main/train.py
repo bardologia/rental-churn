@@ -60,14 +60,13 @@ def train(config, use_cache, save_results=False):
         config.early_stopping.patience        = config.overfit.overfit_patience
         config.training.epochs                = config.overfit.overfit_epochs
         config.scheduler.scheduler_patience   = config.overfit.overfit_patience
-        config.training.mixed_precision       = config.overfit.overfit_mixed_precision
         config.ema.use_ema                    = config.overfit.overfit_use_ema
         config.split.val_size                 = config.overfit.overfit_val_size
         config.split.test_size                = config.overfit.overfit_test_size
         config.load.user_sample_count         = config.overfit.overfit_number_of_users
         config.architecture.min_seq_len       = config.overfit.overfit_min_length
         logger.section(f"[Overfit Single Batch Mode Enabled]")
-        logger.subsection("Overfit single batch mode: Disabled dropout, augmentation, weight decay, mixed precision")
+        logger.subsection("Overfit single batch mode: Disabled dropout, augmentation, weight decay")
         logger.subsection("Increased epochs and patience to allow overfitting \n")
 
     logger.section(f"[Cache]")

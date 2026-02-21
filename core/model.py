@@ -52,11 +52,11 @@ class GRN(nn.Module):
     ):
         super().__init__()
         
-        self.fully_connected_1 = nn.Linear(input_dimension, output_dimension)
-        self.fully_connected_2 = nn.Linear(output_dimension, output_dimension)
+        self.fully_connected_1 = nn.Linear(input_dimension, hidden_dimension)
+        self.fully_connected_2 = nn.Linear(hidden_dimension, output_dimension)
         
         if context_dimension is not None:
-            self.context_projection = nn.Linear(context_dimension, output_dimension, bias=False)
+            self.context_projection = nn.Linear(context_dimension, hidden_dimension, bias=False)
         
         self.context_dimension = context_dimension
         
@@ -213,75 +213,85 @@ class InvoiceEncoder(nn.Module):
             nn.Linear(model_dimension, model_dimension)
         )
         
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:  
-        batch_size, sequence_length, num_features, embedding_dimension = tokens.shape
-        tokens_flat = tokens.view(batch_size * sequence_length, num_features, embedding_dimension)
-          
-        hidden = tokens_flat
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        hidden = tokens
         for layer in self.layers:
             hidden = layer(hidden)
-        
+
         pooled = hidden.mean(dim=1)
-        output = self.pool(pooled)
-        
-        output = output.view(batch_size, sequence_length, -1)
-            
-        return output
+        return self.pool(pooled)
 
 
 class TransformerBlock(nn.Module):
     def __init__(
-        self, 
-        model_dimension: int, 
-        num_heads: int, 
+        self,
+        model_dimension: int,
+        num_heads: int,
         dropout: float = 0.1,
         drop_path_rate: float = 0.1,
-        rotary_positional_embedding: Optional[RoPE] = None,
-        is_causal: bool = False
+        rotary_positional_embedding: Optional[nn.Module] = None,
+        is_causal: bool = False,
     ):
         super().__init__()
+        if model_dimension % num_heads != 0:
+            raise ValueError("model_dimension must be divisible by num_heads")
+
         self.num_heads = num_heads
         self.head_dimension = model_dimension // num_heads
         self.rotary_positional_embedding = rotary_positional_embedding
         self.is_causal = is_causal
         self.dropout = dropout
 
-        self.layer_norm_1         = nn.LayerNorm(model_dimension)
-        self.query_key_value      = nn.Linear(model_dimension, 3 * model_dimension, bias=False)
-        self.output_projection    = nn.Linear(model_dimension, model_dimension)
-        self.drop_path_1          = StochasticDepth(drop_path_rate)
+        self.layer_norm_1 = nn.LayerNorm(model_dimension)
+        self.query_key_value = nn.Linear(model_dimension, 3 * model_dimension, bias=False)
+        self.output_projection = nn.Linear(model_dimension, model_dimension)
 
-        self.layer_norm_2         = nn.LayerNorm(model_dimension)
+        self.drop_path_1 = StochasticDepth(drop_path_rate)
+
+        self.layer_norm_2 = nn.LayerNorm(model_dimension)
         self.feed_forward_network = SwiGLU(model_dimension, model_dimension * 4, model_dimension, dropout)
-        self.drop_path_2          = StochasticDepth(drop_path_rate)
+        self.drop_path_2 = StochasticDepth(drop_path_rate)
 
     def forward(self, input_tensor: torch.Tensor, key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         B, L, D = input_tensor.shape
         normalized = self.layer_norm_1(input_tensor)
 
         qkv = self.query_key_value(normalized).reshape(B, L, 3, self.num_heads, self.head_dimension)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        query, key, value = qkv[0], qkv[1], qkv[2]  
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, H, L, Hd)
+        query, key, value = qkv[0], qkv[1], qkv[2]  # (B, H, L, Hd)
 
         if self.rotary_positional_embedding is not None:
             query, key = self.rotary_positional_embedding(query, key, L)
 
         attn_mask = None
-        if self.is_causal:
-            causal = torch.triu(torch.ones(L, L, device=input_tensor.device, dtype=torch.bool), diagonal=1)  
-            attn_mask = causal[None, None, :, :]  
+        use_causal_flag = self.is_causal
 
         if key_padding_mask is not None:
-            pad = key_padding_mask[:, None, None, :]  
-            attn_mask = pad if attn_mask is None else (attn_mask | pad) 
+            if key_padding_mask.dtype != torch.bool:
+                key_padding_mask = key_padding_mask.to(torch.bool)
 
-        use_causal_flag = self.is_causal and key_padding_mask is None
-        
+            allowed_keys = ~key_padding_mask  
+            allowed_keys = allowed_keys[:, None, None, :] 
+
+            if self.is_causal:
+                causal_allowed  = torch.ones(L, L, device=input_tensor.device, dtype=torch.bool).tril()
+                causal_allowed  = causal_allowed[None, None, :, :] 
+                attn_mask       = causal_allowed & allowed_keys
+                use_causal_flag = False  
+            else:
+                attn_mask       = allowed_keys
+                use_causal_flag = False  
+        else:
+            attn_mask       = None
+            use_causal_flag = self.is_causal
+
         attention_output = F.scaled_dot_product_attention(
-            query, key, value,
+            query,
+            key,
+            value,
             attn_mask=attn_mask,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=use_causal_flag
+            is_causal=use_causal_flag,
         )
 
         attention_output = attention_output.transpose(1, 2).reshape(B, L, D)
@@ -337,7 +347,13 @@ class SequenceEncoder(nn.Module):
         for layer in self.layers:
             hidden = layer(hidden, key_padding_mask=key_padding_mask)
 
+            if key_padding_mask is not None:
+                hidden = hidden.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
+
         hidden = self.layer_norm(hidden)
+
+        if key_padding_mask is not None:
+            hidden = hidden.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
 
         if lengths is not None:
             idx = torch.arange(B, device=sequence.device)
@@ -352,18 +368,43 @@ class SequenceEncoder(nn.Module):
 class CrossAttention(nn.Module):
     def __init__(self, model_dimension: int, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
-        
-        self.attention              = nn.MultiheadAttention(model_dimension, num_heads, dropout=dropout, batch_first=True)
+
+        self.num_heads      = num_heads
+        self.head_dimension = model_dimension // num_heads
+        self.model_dimension = model_dimension
+        self.dropout        = dropout
+
+        self.query_projection = nn.Linear(model_dimension, model_dimension, bias=False)
+        self.key_projection   = nn.Linear(model_dimension, model_dimension, bias=False)
+        self.value_projection = nn.Linear(model_dimension, model_dimension, bias=False)
+        self.out_projection   = nn.Linear(model_dimension, model_dimension)
+
         self.gated_residual_network = GRN(model_dimension, model_dimension * 2, model_dimension, dropout)
         self.dropout_layer          = nn.Dropout(dropout)
-        
+
     def forward(self, current: torch.Tensor, history: torch.Tensor, mask: Optional[torch.Tensor] = None):
-        
-        query = current.unsqueeze(1)
-        attention_output, attention_weights = self.attention(query, history, history, key_padding_mask=mask)
-        attended = self.gated_residual_network(current + self.dropout_layer(attention_output.squeeze(1)))
-        
-        return attended, attention_weights
+        B = current.shape[0]
+        L = history.shape[1]
+
+        q = self.query_projection(current).view(B, 1, self.num_heads, self.head_dimension).transpose(1, 2)  # (B, H, 1, Hd)
+        k = self.key_projection(history).view(B, L, self.num_heads, self.head_dimension).transpose(1, 2)    # (B, H, L, Hd)
+        v = self.value_projection(history).view(B, L, self.num_heads, self.head_dimension).transpose(1, 2)  # (B, H, L, Hd)
+
+        attn_mask = None
+        if mask is not None:
+            attn_mask = (~mask)[:, None, None, :] 
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask = attn_mask,
+            dropout_p = self.dropout if self.training else 0.0,
+        )
+
+        out      = out.transpose(1, 2).reshape(B, self.model_dimension)
+        out      = self.out_projection(out)
+        attended = self.gated_residual_network(current + self.dropout_layer(out))
+
+        return attended, None
 
 
 class Model(nn.Module):
@@ -427,9 +468,13 @@ class Model(nn.Module):
         last_indices                   = (lengths - 1).long().clamp(min=0)
         mask                           = torch.arange(sequence_length, device=categorical_sequence.device).expand(batch_size, sequence_length) >= lengths.unsqueeze(1)
 
-        tokens                  = self.tokenizer(categorical_sequence, continuous_sequence)
-        invoice_representations = self.invoice_encoder(tokens)
-        
+        tokens = self.tokenizer(categorical_sequence, continuous_sequence)  # (B, L, F, D)
+
+        valid_mask              = ~mask                                                          # (B, L) True = valid
+        valid_repr              = self.invoice_encoder(tokens[valid_mask])                      # (N_valid, D)
+        invoice_representations = tokens.new_zeros(batch_size, sequence_length, self.hidden_dimension)
+        invoice_representations[valid_mask] = valid_repr.to(invoice_representations.dtype)     # (B, L, D)
+
         context, all_hidden     = self.sequence_encoder(invoice_representations, lengths)
         current_representation  = invoice_representations[batch_indices, last_indices]
         attended, _             = self.temporal_attention(current_representation, all_hidden, mask=mask)

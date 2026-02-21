@@ -371,7 +371,10 @@ class Tracker:
                 self.writer.add_scalar(f'gradients/layer_abs_mean/{name}',     grad_abs_mean, step)
                 self.writer.add_scalar(f'gradients/layer_zero_percent/{name}', zero_percent, step)
                 self.writer.add_scalar(f'gradients/grad_param_ratio/{name}',   grad_param_ratio, step)
-                self.writer.add_histogram(f'gradients/histogram/{name}',       grad_flat, step)
+                if grad_flat.numel() > 0:
+                    grad_finite = grad_flat[torch.isfinite(grad_flat)]
+                    if grad_finite.numel() > 0:
+                        self.writer.add_histogram(f'gradients/histogram/{name}', grad_finite, step)
         
         total_norm = total_norm ** 0.5
         
